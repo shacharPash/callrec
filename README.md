@@ -110,3 +110,7 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 - On speakers (no headphones) your mic also hears the other side, so a few of their lines may be labeled as you. Headphones give the cleanest result.
 - macOS shows its own recording indicator in the menu bar while callrec records. Only you see it.
 - Recording laws differ by country. In Israel a participant may record a conversation they take part in; elsewhere you may need everyone's consent. Check your workplace policy too.
+
+## License
+
+[MIT](LICENSE). The tools archive in each release has its own licenses: ffmpeg and ffprobe are LGPL 2.1, whisper-cli is MIT (both included in the archive).

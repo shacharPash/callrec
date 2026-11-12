@@ -1,7 +1,10 @@
 #!/usr/bin/env -S UV_MANAGED_PYTHON=1 uv run --quiet --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["catap>=0.6.1"]
+# dependencies = ["catap==0.6.1"]
+#
+# [tool.uv]
+# exclude-newer = "2026-11-12T00:00:00Z"
 # ///
 """callrec: record every call on your Mac (your mic + everything the Mac plays) and
 transcribe it locally. Hebrew uses the ivrit.ai model, English uses Whisper large-v3-turbo.

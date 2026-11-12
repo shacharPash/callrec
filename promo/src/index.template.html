@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CallRec Promo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&display=block" rel="stylesheet">
+<style>
+  :root{
+    --bg:#06070a; --blue:#0A84FF; --orange:#FF9F0A; --red:#FF453A;
+    --fg:#f5f5f7; --muted:#9a9aa3; --line:rgba(255,255,255,.09);
+    --sys:-apple-system,"SF Pro Text","Helvetica Neue",Heebo,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:100%;height:100%;background:#000;overflow:hidden}
+  body{font-family:Heebo,sans-serif;color:var(--fg);-webkit-font-smoothing:antialiased}
+  #stage{position:absolute;left:50%;top:50%;width:1920px;height:1080px;transform-origin:0 0;
+    background:var(--bg);overflow:hidden}
+  .abs{position:absolute}
+  .scene{position:absolute;inset:0;opacity:0}
+  .center{position:absolute;left:0;right:0;text-align:center}
+  .w{display:inline-block;will-change:transform,opacity}
+  .grad{background:linear-gradient(270deg,var(--blue) 0%,#7d8cff 45%,var(--orange) 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+
+  /* background */
+  .blob{position:absolute;width:1100px;height:1100px;border-radius:50%;filter:blur(40px);opacity:.5}
+  #blobA{background:radial-gradient(circle,rgba(10,132,255,.55) 0%,rgba(10,132,255,0) 65%)}
+  #blobB{background:radial-gradient(circle,rgba(255,159,10,.42) 0%,rgba(255,159,10,0) 65%)}
+  #vignette{position:absolute;inset:0;background:radial-gradient(ellipse at center,rgba(0,0,0,0) 45%,rgba(0,0,0,.65) 100%)}
+
+  /* scene 1 */
+  #h1{top:300px;font-size:156px;font-weight:800;line-height:1.15;letter-spacing:-2px}
+  #h1b{top:520px;font-size:76px;font-weight:500;color:#d8d8de;line-height:1.2}
+  #h1b .strike{position:relative;display:inline-block}
+  #wave{position:absolute;left:360px;width:1200px;top:720px;height:200px;display:flex;align-items:center;justify-content:space-between;direction:ltr}
+  #wave i{display:block;width:10px;border-radius:6px;background:#fff}
+
+  /* scene 2 */
+  #cap2a,#cap2b,#cap2c{top:96px;font-size:64px;font-weight:700;line-height:1.2}
+  #cap2b .sub{display:block;font-size:40px;font-weight:400;color:var(--muted);margin-top:12px}
+  #desk{left:210px;top:270px;width:1500px;height:770px;border-radius:30px;overflow:hidden;
+    background:radial-gradient(ellipse at 20% 110%,#1e3a6e 0%,rgba(30,58,110,0) 55%),radial-gradient(ellipse at 90% 0%,#4a2a10 0%,rgba(74,42,16,0) 50%),linear-gradient(160deg,#141826,#0b0c12);
+    box-shadow:0 40px 120px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.08);transform-origin:50% 0}
+  /* macOS menu bar drawn at 2x (24pt bar, 13pt text) */
+  #menubar{position:absolute;left:0;right:0;top:0;height:48px;background:rgba(28,28,34,.72);
+    border-bottom:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:space-between;
+    padding:0 22px;font-family:var(--sys);font-size:26px;color:#eee;direction:ltr}
+  #menubar .left{display:flex;gap:40px;align-items:center}
+  #menubar .left b{font-weight:700}
+  #menubar .right{display:flex;gap:30px;align-items:center}
+  #mbicon{position:relative;width:56px;height:40px;display:flex;align-items:center;justify-content:center;border-radius:8px}
+  #mbicon img{height:32px;width:auto;display:block}
+  #mbicon #mbRec{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+  /* native macOS Sonoma menu at 2x */
+  #dropdown{position:absolute;top:52px;right:16px;width:660px;padding:10px 0;border-radius:14px;
+    background:rgba(40,40,42,.86);backdrop-filter:blur(30px) saturate(1.6);-webkit-backdrop-filter:blur(30px) saturate(1.6);
+    border:1px solid rgba(255,255,255,.14);box-shadow:0 0 0 1px rgba(0,0,0,.55),0 22px 60px rgba(0,0,0,.55);
+    font-family:var(--sys);font-size:26px;color:#f2f2f2;transform-origin:85% 0;opacity:0;direction:ltr;text-align:left;z-index:5}
+  #dropdown .mi{display:flex;align-items:center;height:44px;margin:0 10px;padding-right:20px;border-radius:8px;white-space:nowrap}
+  #dropdown .ck{width:42px;flex:none;display:flex;justify-content:center;align-items:center}
+  #dropdown .lb{flex:1}
+  #dropdown .ind .lb{padding-left:24px}
+  #dropdown .k{color:rgba(255,255,255,.5);margin-left:40px;letter-spacing:1px}
+  #dropdown .dis .lb{color:rgba(255,255,255,.4)}
+  #dropdown .mh{height:40px;display:flex;align-items:flex-end;padding:0 0 6px 52px;font-size:22px;font-weight:600;color:rgba(255,255,255,.5)}
+  #dropdown .sep{height:2px;background:rgba(255,255,255,.1);margin:9px 20px}
+  #callwin{left:110px;top:150px;width:760px;height:460px;border-radius:20px;background:rgba(22,22,28,.92);
+    border:1px solid rgba(255,255,255,.1);box-shadow:0 30px 80px rgba(0,0,0,.5);overflow:hidden}
+  .tb{height:52px;display:flex;align-items:center;gap:12px;padding:0 20px;direction:ltr;border-bottom:1px solid var(--line)}
+  .tb i{width:15px;height:15px;border-radius:50%;display:block}
+  .tb .t{flex:1;text-align:center;font-size:22px;color:#aaa;margin-right:70px}
+  .tiles{display:flex;gap:20px;padding:24px;height:calc(100% - 52px)}
+  .tile{flex:1;border-radius:16px;background:linear-gradient(160deg,#23232b,#17171d);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px}
+  .av{width:150px;height:150px;border-radius:50%;display:flex;align-items:center;justify-content:center}
+  .av svg{width:80px;height:80px}
+  .tile .nm{font-size:28px;font-weight:600}
+  #cap2c{top:190px}
+  #keys{position:absolute;left:0;right:0;top:400px;display:flex;justify-content:center;gap:44px;direction:ltr}
+  .key{width:240px;height:240px;border-radius:44px;background:linear-gradient(180deg,#2b2b31,#1a1a1f);
+    border:1px solid rgba(255,255,255,.14);box-shadow:0 14px 0 #0c0c0f,0 30px 60px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.12);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px}
+  .key .g{font-family:var(--sys);font-size:120px;line-height:1;font-weight:500}
+  .key .l{font-family:var(--sys);font-size:26px;color:var(--muted);letter-spacing:.5px}
+  #cap2d{top:780px;font-size:40px;color:var(--muted);font-weight:400}
+
+  /* scene 3 */
+  #h3{top:170px;font-size:104px;font-weight:800;line-height:1.15}
+  #chips{position:absolute;left:400px;right:400px;top:400px;display:flex;flex-wrap:wrap;justify-content:center;gap:30px 30px;direction:ltr}
+  .chip{display:flex;align-items:center;gap:18px;padding:22px 40px;border-radius:999px;font-size:54px;font-weight:600;
+    background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);box-shadow:inset 0 1px 0 rgba(255,255,255,.08);line-height:1}
+  .chip b{width:16px;height:16px;border-radius:50%;display:block}
+  #h3b{top:770px;font-size:66px;font-weight:700;line-height:1.2}
+  #h3c{top:868px;font-size:40px;font-weight:400;color:var(--muted)}
+
+  /* scene 4 */
+  #rwCam{position:absolute;left:0;top:0;transform-origin:0 0}
+  /* Recordings window: native geometry and colors measured from the real app (1180x631 pt) */
+  #rw{position:relative;width:1180px;height:631px;border-radius:12px;background:#23292b;overflow:hidden;direction:ltr;text-align:left;
+    font-family:var(--sys);font-size:13px;color:#e8e9e9;box-shadow:0 0 0 1px rgba(255,255,255,.13),0 30px 90px rgba(0,0,0,.7)}
+  #rw .a{position:absolute}
+  #rw .sb{left:5px;top:5px;width:347px;height:621px;border-radius:12px;background:#1c2021;border:1px solid #374345}
+  #rw .tl{width:13px;height:13px;border-radius:50%;top:9.5px}
+  #rw .srch{left:8px;top:51px;width:329px;height:28px;border-radius:9px;background:#2f3233;color:#9d9fa0;font-size:13px;line-height:28px;padding-left:29px}
+  #rw .srch svg{position:absolute;left:9px;top:7px}
+  #rw .row{left:8px;width:329px;height:42px;border-radius:7px;padding:5px 0 0 6px}
+  #rw .row b{display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#fff;height:18px}
+  #rw .row span{display:block;font-size:11px;color:#a2a5a6;margin-top:1px}
+  #rw .row.sel{background:#2454cc} #rw .row.sel span{color:rgba(255,255,255,.88)}
+  #rw .hdr{left:373px;top:6px} #rw .hdr b{font-size:13px;font-weight:700;color:#fff;display:block}
+  #rw .hdr span{font-size:11px;color:#a0a3a4;display:block;margin-top:1px}
+  #rw .hl{left:353px;right:0;height:1px;background:#393e40}
+  #rw .btn{top:61px;height:24px;border-radius:6px;background:#33393b;display:flex;align-items:center;justify-content:center}
+  #rw .pt{top:64px;font-size:13px;font-variant-numeric:tabular-nums;color:#e8e9e9}
+  #rw .info{left:353px;top:99px;width:827px;height:101px;background:#2a3032}
+  #rw .info div{position:absolute;width:158px}
+  #rw .info i{display:block;font-style:normal;font-size:11px;color:#a0a3a4}
+  #rw .info b{display:block;white-space:nowrap;font-weight:400;font-size:13px;color:#e8e9e9;margin-top:1px;line-height:15px}
+  #rw .tr{left:353px;top:201px;width:827px;bottom:0;direction:rtl;text-align:right;padding:16px 20px 0}
+  #rw .leg{font-size:11px;color:#a0a3a4;display:flex;gap:18px;align-items:center;margin-bottom:12px}
+  #rw .leg span{display:flex;align-items:center;gap:5px}
+  #rw .leg i{width:8px;height:8px;border-radius:50%;display:block}
+  #rw .ln{display:flex;align-items:baseline;gap:8px;margin-bottom:10px;opacity:0}
+  #rw .ln .sp{font-weight:700;flex:none} #rw .ln.me .sp{color:#0A84FF} #rw .ln.them .sp{color:#FF9F0A}
+  #rw .ln .ts{font-size:11px;color:#8f9293;text-decoration:underline;text-decoration-color:rgba(143,146,147,.5);text-underline-offset:2px;flex:none;direction:ltr;font-variant-numeric:tabular-nums}
+  #rw .ln .tx{font-size:13px;color:#e8e9e9}
+  #cap4a{top:44px;font-size:64px;font-weight:800;line-height:1.2}
+  #s4shade{position:absolute;left:0;right:0;bottom:0;height:360px;background:linear-gradient(180deg,rgba(6,7,10,0),rgba(6,7,10,.92) 55%)}
+  #cap4b{top:872px;font-size:52px;font-weight:700;line-height:1.2}
+  #cap4b .b{color:var(--blue)} #cap4b .o{color:var(--orange)}
+  #badge{position:absolute;left:0;right:0;top:960px;display:flex;justify-content:center}
+  #badge span{padding:12px 28px;border-radius:999px;font-size:34px;font-weight:700;
+    background:linear-gradient(270deg,rgba(10,132,255,.25),rgba(255,159,10,.25));border:1px solid rgba(255,255,255,.2)}
+  #cap4c{top:872px;font-size:52px;font-weight:700;line-height:1.2}
+
+  /* scene 5 */
+  #h5{top:330px;font-size:170px;font-weight:900;line-height:1.1;letter-spacing:-2px}
+  #h5 .w{margin:0 22px}
+  #h5b{top:580px;font-size:66px;font-weight:500;color:#d8d8de}
+  #end{left:0;right:0;top:0;bottom:0}
+  #bigicon{position:absolute;left:770px;top:204px;width:380px;height:380px}
+  #glow{position:absolute;left:660px;top:100px;width:600px;height:600px;border-radius:50%;
+    background:radial-gradient(circle,rgba(10,132,255,.35),rgba(255,159,10,.12) 45%,rgba(0,0,0,0) 70%)}
+  #word{top:590px;font-size:150px;font-weight:800;letter-spacing:-3px;direction:ltr;line-height:1.1}
+  #tag{top:790px;font-size:44px;color:#d2d2d8;font-weight:500}
+  #req{top:870px;font-size:30px;color:#77777f}
+
+  #cursor{position:absolute;left:0;top:0;width:44px;height:44px;opacity:0;z-index:50;pointer-events:none}
+  #ripple{position:absolute;width:70px;height:70px;border-radius:50%;border:3px solid rgba(255,255,255,.8);opacity:0;z-index:49}
+
+  /* replay control (outside stage) */
+  #replay{position:fixed;left:18px;bottom:18px;z-index:100;display:flex;align-items:center;gap:8px;
+    padding:9px 16px;border-radius:999px;border:1px solid rgba(255,255,255,.2);background:rgba(20,20,24,.7);
+    color:#fff;font:500 15px Heebo,sans-serif;cursor:pointer;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    opacity:0;transition:opacity .4s;pointer-events:none}
+  #replay.on{opacity:1;pointer-events:auto}
+  #replay:hover{background:rgba(40,40,48,.85)}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="blobA" class="blob"></div>
+  <div id="blobB" class="blob"></div>
+  <div id="vignette"></div>
+
+  <!-- 1. Hook -->
+  <div id="s1" class="scene">
+    <div id="h1" class="center"><span class="w">כל</span> <span class="w">שיחה.</span> <span class="w grad">מתומללת.</span></div>
+    <div id="h1b" class="center"><span class="w">בלי</span> <span class="w">בוט</span> <span class="w">בפגישה.</span></div>
+    <div id="wave"></div>
+  </div>
+
+  <!-- 2. How -->
+  <div id="s2" class="scene">
+    <div id="cap2a" class="center">לחיצה אחת בסרגל התפריטים.</div>
+    <div id="cap2b" class="center">מקליט. בשקט.<span class="sub">האייקון רק מתמלא. בלי טיימר, בלי חלונות קופצים.</span></div>
+    <div id="desk" class="abs">
+      <div id="callwin" class="abs">
+        <div class="tb"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><div class="t">Project sync</div></div>
+        <div class="tiles">
+          <div class="tile"><div class="av" style="background:rgba(10,132,255,.18);box-shadow:0 0 0 5px var(--blue)"><svg viewBox="0 0 24 24" fill="#0A84FF"><circle cx="12" cy="8" r="4.2"/><path d="M3.5 21c.8-4.6 4.2-7 8.5-7s7.7 2.4 8.5 7z"/></svg></div><div class="nm" style="color:var(--blue)">אני</div></div>
+          <div class="tile"><div class="av" style="background:rgba(255,159,10,.16);box-shadow:0 0 0 5px var(--orange)"><svg viewBox="0 0 24 24" fill="#FF9F0A"><circle cx="12" cy="8" r="4.2"/><path d="M3.5 21c.8-4.6 4.2-7 8.5-7s7.7 2.4 8.5 7z"/></svg></div><div class="nm" style="color:var(--orange)">הצד השני</div></div>
+        </div>
+      </div>
+      <div id="menubar">
+        <div class="left"><b>Finder</b><span>File</span><span>Edit</span><span>View</span><span>Go</span><span>Window</span></div>
+        <div class="right">
+          <div id="mbicon"><img id="mbIdle" src="{{MB_IDLE}}" alt=""><img id="mbRec" src="{{MB_REC}}" alt="" style="opacity:0"></div>
+          <svg width="32" height="24" viewBox="0 0 34 26" fill="none" stroke="#eee" stroke-width="3" stroke-linecap="round"><path d="M3 9a20 20 0 0 1 28 0"/><path d="M8 14.5a12.5 12.5 0 0 1 18 0"/><path d="M13 20a5 5 0 0 1 8 0"/></svg>
+          <svg width="46" height="22" viewBox="0 0 50 24"><rect x="1.5" y="1.5" width="42" height="21" rx="6" fill="none" stroke="#bbb" stroke-width="2.4"/><rect x="5" y="5" width="30" height="14" rx="3" fill="#eee"/><rect x="46" y="8" width="3" height="8" rx="1.5" fill="#bbb"/></svg>
+          <span>Thu 10:00</span>
+        </div>
+      </div>
+      <div id="dropdown">
+        <div class="mi dis"><span class="ck"></span><span class="lb">Ready</span></div>
+        <div class="sep"></div>
+        <div class="mi" id="miStart"><span class="ck"></span><span class="lb">Start recording</span><span class="k">⌃⌥R</span></div>
+        <div class="mi ind"><span class="ck"></span><span class="lb">Start automatically when a call starts</span></div>
+        <div class="mi ind"><span class="ck"><svg width="22" height="18" viewBox="0 0 22 18"><path d="M2.5 9.5 8 15 19.5 2.5" fill="none" stroke="#f2f2f2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lb">Name recordings from Calendar</span></div>
+        <div class="sep"></div>
+        <div class="mh">Recent recordings</div>
+        <div class="mi ind"><span class="ck"></span><span class="lb">Today 13:00 · Chrome · 90 min</span></div>
+        <div class="mi ind"><span class="ck"></span><span class="lb">Today 11:01 · daily · 19 min</span></div>
+        <div class="mi"><span class="ck"></span><span class="lb">Show all recordings…</span><span class="k">⌘O</span></div>
+        <div class="sep"></div>
+        <div class="mi"><span class="ck"></span><span class="lb">Test mic and system audio</span></div>
+        <div class="mi ind"><span class="ck"></span><span class="lb">Open at login</span></div>
+        <div class="mi"><span class="ck"></span><span class="lb">Quit CallRec</span><span class="k">⌘Q</span></div>
+      </div>
+    </div>
+    <div id="keys">
+      <div class="key"><div class="g">⌃</div><div class="l">control</div></div>
+      <div class="key"><div class="g">⌥</div><div class="l">option</div></div>
+      <div class="key"><div class="g">R</div><div class="l">&nbsp;</div></div>
+    </div>
+    <div id="cap2c" class="center">או קיצור מקשים, מכל מקום.</div>
+    <div id="cap2d" class="center">ובסוף השיחה הוא עוצר לבד.</div>
+  </div>
+
+  <!-- 3. Anywhere -->
+  <div id="s3" class="scene">
+    <div id="h3" class="center">עובד בכל אפליקציה.</div>
+    <div id="chips">
+      <div class="chip"><b style="background:var(--blue)"></b>Zoom</div>
+      <div class="chip"><b style="background:var(--orange)"></b>Google Meet</div>
+      <div class="chip"><b style="background:var(--blue)"></b>Slack</div>
+      <div class="chip"><b style="background:var(--orange)"></b>Teams</div>
+      <div class="chip"><b style="background:var(--blue)"></b>WhatsApp</div>
+      <div class="chip"><b style="background:var(--orange)"></b>FaceTime</div>
+    </div>
+    <div id="h3b" class="center">עם אוזניות או בלי.</div>
+    <div id="h3c" class="center">גם אם מחליפים אוזניות באמצע השיחה.</div>
+  </div>
+
+  <!-- 4. Result: the real Recordings window layout -->
+  <div id="s4" class="scene">
+    <div id="rwCam"><div id="rw">
+      <div class="a sb">
+        <div class="a tl" style="left:10.5px;background:#ff5f57"></div><div class="a tl" style="left:33.5px;background:#febc2e"></div><div class="a tl" style="left:56.5px;background:#28c840"></div>
+        <svg class="a" style="left:314px;top:10px" width="20" height="15" viewBox="0 0 20 15" fill="none" stroke="#cfd1d2" stroke-width="1.3"><rect x=".7" y=".7" width="18.6" height="13.6" rx="3"/><path d="M7 .7v13.6"/><path d="M2.8 4h2.2M2.8 6.3h2.2M2.8 8.6h2.2" stroke-linecap="round"/></svg>
+        <div class="a srch"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9d9fa0" stroke-width="2.6" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M15.5 15.5 21 21"/></svg>Search transcripts</div>
+        <div class="a row sel" style="top:89px"><b><svg width="13" height="12" viewBox="0 0 13 12" fill="#cfd8ff"><rect x="0" y="4" width="1.4" height="4" rx=".7"/><rect x="2.3" y="2" width="1.4" height="8" rx=".7"/><rect x="4.6" y="0" width="1.4" height="12" rx=".7"/><rect x="6.9" y="3" width="1.4" height="6" rx=".7"/><rect x="9.2" y="1" width="1.4" height="10" rx=".7"/><rect x="11.5" y="4" width="1.4" height="4" rx=".7"/></svg>Project sync</b><span>Zoom · 24 min · Hebrew</span></div><div class="a row" style="top:132px"><b>Today 09:30</b><span>Chrome · 41 min · English</span></div><div class="a row" style="top:175px"><b>Design review</b><span>Slack · 18 min · Hebrew</span></div><div class="a row" style="top:218px"><b>Today 08:45</b><span>Teams · 32 min · Hebrew</span></div><div class="a row" style="top:261px"><b>Today 08:10</b><span>FaceTime · 6 min · Hebrew</span></div><div class="a row" style="top:304px"><b>Weekly planning</b><span>WhatsApp · 12 min · Hebrew</span></div>
+      </div>
+      <div class="a hdr"><b>Project sync</b><span>Zoom · 24 min · Hebrew</span></div>
+      <div class="a hl" style="top:47px"></div>
+      <div class="a btn" style="left:365px;width:42px"><svg id="rwPlay" width="12" height="12" viewBox="0 0 12 12"><path d="M2 1v10l9-5z" fill="#f2f2f2"/></svg><svg id="rwPause" width="12" height="12" viewBox="0 0 12 12" style="display:none"><rect x="2" y="1" width="2.8" height="10" rx=".8" fill="#f2f2f2"/><rect x="7.2" y="1" width="2.8" height="10" rx=".8" fill="#f2f2f2"/></svg></div>
+      <div class="a pt" id="rwTime" style="left:419px">0:00</div>
+      <div class="a" style="left:469px;top:71px;width:420px;height:4px;border-radius:2px;background:#393e40"><div id="rwFill" style="height:100%;width:0;border-radius:2px;background:#0A84FF"></div></div>
+      <div class="a" id="rwKnob" style="left:459px;top:65px;width:20px;height:16px;border-radius:8px;background:#dedfdf;box-shadow:0 .5px 2px rgba(0,0,0,.5)"></div>
+      <div class="a pt" style="right:230px">24:12</div>
+      <div class="a" style="left:963px;top:62px;width:1px;height:22px;background:#393e40"></div>
+      <div class="a btn" style="left:976px;width:40px;opacity:.5"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#d3d5d6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h2"/></svg></div>
+      <div class="a btn" style="left:1029px;width:42px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#d3d5d6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 10h18"/></svg></div>
+      <div class="a btn" style="left:1084px;width:36px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#d3d5d6" stroke-width="2.2" stroke-linecap="round"><path d="M4 20 20 4"/></svg></div>
+      <div class="a btn" style="left:1133px;width:38px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#d3d5d6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg></div>
+      <div class="a hl" style="top:98px"></div>
+      <div class="a info"><div style="left:16px;top:10px"><i>Date</i><b>Sunday, Nov 8 2026, 10:00</b></div><div style="left:177px;top:10px"><i>Duration</i><b>24 min</b></div><div style="left:339px;top:10px"><i>App</i><b>Zoom</b></div><div style="left:500px;top:10px"><i>Language</i><b>Hebrew</b></div><div style="left:662px;top:10px"><i>Transcribed with</i><b>ivrit.ai whisper-large-<br>v3-turbo</b></div><div style="left:16px;top:62px"><i>Microphone</i><b>MacBook Pro Microphone</b></div><div style="left:177px;top:62px"><i>Played through</i><b>MacBook Pro Speakers</b></div></div>
+      <div class="a hl" style="top:200px"></div>
+      <div class="a tr">
+        <div class="leg"><span><i style="background:#0A84FF"></i><b style="color:#0A84FF">אני</b> your microphone</span><span><i style="background:#FF9F0A"></i><b style="color:#FF9F0A">הצד השני</b> what your Mac played</span></div>
+        <div id="lines"><div class="ln me"><span class="sp">אני</span><span class="ts">00:02</span><span class="tx" dir="auto">היי, נתחיל? רציתי לעבור על הספרינט.</span></div><div class="ln them"><span class="sp">הצד השני</span><span class="ts">00:06</span><span class="tx" dir="auto">בטח. רוב המשימות סגורות, נשארו שתיים.</span></div><div class="ln me"><span class="sp">אני</span><span class="ts">00:11</span><span class="tx" dir="auto">מעולה. מה חוסם אותן?</span></div><div class="ln them"><span class="sp">הצד השני</span><span class="ts">00:15</span><span class="tx" dir="auto">We're still waiting on the design review.</span></div><div class="ln me"><span class="sp">אני</span><span class="ts">00:21</span><span class="tx" dir="auto">אוקיי, אז נסגור את זה עד יום חמישי.</span></div></div>
+      </div>
+    </div></div>
+    <div id="s4shade"></div>
+    <div id="cap4a" class="center">התמלול מוכן כשהשיחה נגמרת.</div>
+    <div id="cap4b" class="center">מי אמר מה: <span class="b">אני</span> ו<span class="o">הצד השני</span>, עם חותמות זמן.</div>
+    <div id="cap4c" class="center">לוחצים על שורה ושומעים אותה.</div>
+    <div id="badge"><span>עברית + English</span></div>
+  </div>
+
+  <!-- 5. Trust + CTA -->
+  <div id="s5" class="scene">
+    <div id="h5" class="center"><span class="w">חינם.</span><span class="w">מקומי.</span><span class="w grad">פרטי.</span></div>
+    <div id="h5b" class="center">שום דבר לא יוצא מהמחשב.</div>
+    <div id="end" class="abs">
+      <div id="glow"></div>
+      <img id="bigicon" src="{{APP_ICON}}" alt="CallRec">
+      <div id="word" class="center">CallRec</div>
+      <div id="tag" class="center">מקליט ומתמלל כל שיחה, ישירות על המק.</div>
+      <div id="req" class="center">דורש מק עם Apple Silicon ומערכת macOS 14.2 ומעלה</div>
+    </div>
+  </div>
+
+  <div id="ripple"></div>
+  <svg id="cursor" viewBox="0 0 24 24"><path d="M5 2.5v17.2l4.3-4.1 2.8 6.4 3-1.3-2.8-6.3h5.9z" fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/></svg>
+</div>
+<button id="replay" type="button" aria-label="הפעלה מחדש"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>הפעלה מחדש</button>
+
+<script>
+const DUR = 25;
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const stage = $('#stage');
+
+/* ---------- math ---------- */
+const cl = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const p = (t, a, b) => cl((t - a) / (b - a));
+const lerp = (a, b, k) => a + (b - a) * k;
+const eo = k => 1 - Math.pow(1 - k, 3);
+const eio = k => k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+const eob = k => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(k - 1, 3) + c1 * Math.pow(k - 1, 2); };
+// envelope: fade in over [a, a+fi], out over [b-fo, b]
+const env = (t, a, b, fi = .35, fo = .35) => Math.min(p(t, a, a + fi), 1 - p(t, b - fo, b));
+
+function set(el, o, x = 0, y = 0, s = 1, blur = 0) {
+  el.style.opacity = o.toFixed(3);
+  el.style.transform = `translate(${x.toFixed(2)}px,${y.toFixed(2)}px) scale(${s.toFixed(4)})`;
+  el.style.filter = blur > .05 ? `blur(${blur.toFixed(2)}px)` : 'none';
+}
+// "rise" reveal: fade + lift + unblur
+function rise(el, t, start, dur = .6, dist = 40) {
+  const k = eo(p(t, start, start + dur));
+  set(el, k, 0, (1 - k) * dist, 1, (1 - k) * 12);
+  return k;
+}
+function words(el, t, start, stagger, dur = .55, dist = 60) {
+  el.querySelectorAll('.w').forEach((w, i) => rise(w, t, start + i * stagger, dur, dist));
+}
+
+/* ---------- build waveform ---------- */
+const wave = $('#wave');
+const NB = 64;
+for (let i = 0; i < NB; i++) wave.appendChild(document.createElement('i'));
+const bars = Array.from(wave.children);
+function mix(c1, c2, k) { return c1.map((v, i) => Math.round(lerp(v, c2[i], k))); }
+
+/* ---------- geometry helpers ---------- */
+function stageScale() { return stage.getBoundingClientRect().width / 1920; }
+function relRect(el) {
+  const s = stageScale(), r = el.getBoundingClientRect(), sr = stage.getBoundingClientRect();
+  return { x: (r.left - sr.left) / s, y: (r.top - sr.top) / s, w: r.width / s, h: r.height / s };
+}
+const cursor = $('#cursor'), ripple = $('#ripple');
+function showCursor(x, y, o, press = 0) {
+  cursor.style.opacity = o.toFixed(3);
+  cursor.style.transform = `translate(${(x - 10).toFixed(1)}px,${(y - 4).toFixed(1)}px) scale(${(1 - press * .15).toFixed(3)})`;
+}
+function showRipple(x, y, k) { // k 0..1 progress, 0 = hidden
+  if (k <= 0 || k >= 1) { ripple.style.opacity = 0; return; }
+  ripple.style.opacity = (1 - k).toFixed(3);
+  ripple.style.transform = `translate(${x - 35}px,${y - 35}px) scale(${(.3 + k * 1.1).toFixed(3)})`;
+}
+const bez = (a, b, c, k) => (1 - k) * (1 - k) * a + 2 * (1 - k) * k * b + k * k * c;
+
+/* ---------- scenes ---------- */
+const S = { s1: $('#s1'), s2: $('#s2'), s3: $('#s3'), s4: $('#s4'), s5: $('#s5') };
+const lines = $$('#rw .ln');
+const chips = $$('.chip');
+const keys = $$('.key');
+
+function render(t) {
+  t = cl(t, 0, DUR);
+  let cur = null; // cursor state for this frame
+
+  /* background blobs drift */
+  const ba = $('#blobA'), bb = $('#blobB');
+  ba.style.transform = `translate(${(-200 + Math.sin(t * .35) * 220 + t * 18).toFixed(1)}px,${(-260 + Math.cos(t * .3) * 140).toFixed(1)}px)`;
+  bb.style.transform = `translate(${(1000 - Math.sin(t * .28) * 240 - t * 10).toFixed(1)}px,${(300 + Math.sin(t * .4 + 1) * 160).toFixed(1)}px)`;
+
+  /* ===== Scene 1: hook 0 - 4.1 ===== */
+  {
+    const o = env(t, 0, 4.15, .01, .45);
+    const out = p(t, 3.7, 4.15);
+    S.s1.style.display = o > 0 ? '' : 'none';
+    if (o > 0) {
+      set(S.s1, o, 0, 0, 1 + eio(out) * .06, out * 10);
+      words($('#h1'), t, .25, .32, .6, 70);
+      words($('#h1b'), t, 2.0, .16, .55, 40);
+      // waveform: grows in, "speech" motion
+      const g = eo(p(t, .1, 1.1));
+      bars.forEach((b, i) => {
+        const u = i / (NB - 1);
+        const shape = Math.sin(u * Math.PI); // taper at ends
+        const n = .5 + .5 * Math.sin(t * 7.3 + i * .55) * Math.sin(t * 3.1 + i * .23 + 1.3);
+        const h = 10 + g * shape * (30 + 150 * n);
+        b.style.height = h.toFixed(1) + 'px';
+        const c = mix([10, 132, 255], [255, 159, 10], u);
+        b.style.background = `rgb(${c})`;
+        b.style.opacity = (.25 + .6 * shape * g).toFixed(3);
+      });
+    }
+  }
+
+  /* ===== Scene 2: how 3.95 - 10.2 ===== */
+  {
+    const o = env(t, 3.95, 10.25, .4, .4);
+    S.s2.style.display = o > 0 ? '' : 'none';
+    if (o > 0) {
+      S.s2.style.opacity = o.toFixed(3);
+      // desk enters, leaves at 7.6
+      const din = eo(p(t, 3.95, 4.7)), dout = eio(p(t, 7.75, 8.25));
+      const desk = $('#desk');
+      set(desk, din * (1 - dout), 0, (1 - din) * 80 + dout * 120, (.94 + .06 * din) * (1 - dout * .1), dout * 8);
+
+      // captions
+      const c1 = rise($('#cap2a'), t, 4.2, .6, 30) * (1 - p(t, 6.85, 7.1));
+      $('#cap2a').style.opacity = c1.toFixed(3);
+      const c2k = eo(p(t, 7.05, 7.6)), c2o = 1 - p(t, 7.85, 8.15);
+      set($('#cap2b'), c2k * c2o, 0, (1 - c2k) * 30, 1, (1 - c2k) * 10);
+      const c3 = eo(p(t, 8.25, 8.8));
+      set($('#cap2c'), c3, 0, (1 - c3) * 30 + 0, 1, (1 - c3) * 10);
+      rise($("#cap2d"), t, 9.3, .6, 24);
+
+      // menu bar icon state
+      const rec = p(t, 6.78, 6.95);
+      $('#mbRec').style.opacity = rec.toFixed(3);
+      $('#mbIdle').style.opacity = (1 - rec).toFixed(3);
+      const mbicon = $('#mbicon');
+      const menuOpen = t >= 5.42 && t < 6.75;
+      mbicon.style.background = menuOpen ? 'rgba(255,255,255,.18)' : 'transparent';
+
+      // dropdown
+      const dd = $('#dropdown');
+      const mo = eo(p(t, 5.42, 5.62)) * (1 - p(t, 6.68, 6.8));
+      set(dd, mo, 0, (1 - mo) * -8, .97 + .03 * mo);
+      const hl = t >= 6.1 && t < 6.8;
+      const mi = $('#miStart');
+      mi.style.background = hl ? 'var(--blue)' : 'transparent';
+      mi.querySelector('.k').style.color = hl ? 'rgba(255,255,255,.85)' : '#9a9aa3';
+
+      // cursor path
+      if (t > 4.5 && t < 7.6) {
+        const ir = relRect(mbicon), it = relRect(mi);
+        const ix = ir.x + ir.w * .5, iy = ir.y + ir.h * .55;
+        const sx = 1050, sy = 760;
+        const mx = it.x + 120, my = it.y + it.h * .55;
+        let x, y, press = 0;
+        if (t < 5.3) { const k = eio(p(t, 4.6, 5.3)); x = bez(sx, 1500, ix, k); y = bez(sy, 520, iy, k); }
+        else if (t < 5.8) { x = ix; y = iy; press = Math.max(0, 1 - Math.abs(t - 5.4) / .1); }
+        else if (t < 6.3) { const k = eio(p(t, 5.8, 6.25)); x = lerp(ix, mx, k); y = bez(iy, my - 20, my, k); }
+        else { x = mx; y = my; press = Math.max(0, 1 - Math.abs(t - 6.62) / .1); }
+        const co = env(t, 4.5, 7.6, .2, .3) * din * (1 - dout);
+        cur = { x, y, o: co, press };
+        if (t > 5.38 && t < 5.9) cur.rip = [ix, iy, p(t, 5.38, 5.85)];
+        if (t > 6.6 && t < 7.1) cur.rip = [mx, my, p(t, 6.6, 7.05)];
+      }
+
+      // keycaps
+      const kin = p(t, 8.05, 8.6);
+      keys.forEach((k, i) => {
+        const a = eob(p(t, 8.05 + i * .09, 8.6 + i * .09));
+        const pt = 8.9 + i * .16;
+        const pr = t >= pt && t < 9.9 ? Math.min(1, (t - pt) / .06) : 0;
+        const lift = (1 - a) * 90;
+        k.style.opacity = cl(a * 1.4).toFixed(3) * (kin > 0 ? 1 : 0);
+        k.style.transform = `translateY(${(lift + pr * 12).toFixed(1)}px) scale(${(.85 + .15 * a).toFixed(4)})`;
+        k.style.boxShadow = pr > 0
+          ? `0 2px 0 #0c0c0f,0 10px 30px rgba(0,0,0,.6),0 0 0 3px rgba(10,132,255,.9),0 0 60px rgba(10,132,255,.45),inset 0 1px 0 rgba(255,255,255,.12)`
+          : `0 14px 0 #0c0c0f,0 30px 60px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.12)`;
+      });
+    }
+  }
+
+  /* ===== Scene 3: anywhere 10.05 - 14.2 ===== */
+  {
+    const o = env(t, 10.05, 14.2, .3, .4);
+    S.s3.style.display = o > 0 ? '' : 'none';
+    if (o > 0) {
+      const out = p(t, 13.8, 14.2);
+      set(S.s3, o, 0, -out * 40, 1, out * 8);
+      rise($('#h3'), t, 10.15, .6, 40);
+      chips.forEach((c, i) => {
+        const a = eob(p(t, 10.5 + i * .13, 11.0 + i * .13));
+        const fl = Math.sin(t * 1.6 + i * 1.1) * 6;
+        c.style.opacity = cl(p(t, 10.5 + i * .13, 10.8 + i * .13)).toFixed(3);
+        c.style.transform = `translateY(${((1 - a) * 50 + fl).toFixed(1)}px) scale(${(.6 + .4 * a).toFixed(4)})`;
+      });
+      rise($('#h3b'), t, 12.0, .6, 30);
+      rise($('#h3c'), t, 12.5, .6, 24);
+    }
+  }
+
+  /* ===== Scene 4: result 14.05 - 21.1 (real Recordings window) ===== */
+  {
+    const o = env(t, 14.05, 21.15, .35, .45);
+    S.s4.style.display = o > 0 ? '' : 'none';
+    if (o > 0) {
+      const out = p(t, 20.7, 21.15);
+      S.s4.style.opacity = o.toFixed(3);
+      S.s4.style.filter = out > .02 ? `blur(${(out * 8).toFixed(1)}px)` : 'none';
+      // camera: whole window, then push in on player + info + transcript
+      const wi = eo(p(t, 14.05, 14.8));
+      const z = eio(p(t, 15.45, 16.45));
+      const s0 = 1.38, s1 = 1.95;
+      const sc = lerp(s0, s1, z) * (.96 + .04 * wi) * (1 + out * .03);
+      const tx = lerp((1920 - 1180 * s0) / 2, 1880 - 1180 * s1, z);
+      const ty = lerp(170, -40 * s1, z) + (1 - wi) * 70;
+      const cam = $('#rwCam');
+      cam.style.opacity = wi.toFixed(3);
+      cam.style.transform = `translate(${tx.toFixed(2)}px,${ty.toFixed(2)}px) scale(${sc.toFixed(4)})`;
+      // captions
+      const ca = rise($('#cap4a'), t, 14.35, .6, 30) * (1 - p(t, 15.35, 15.7));
+      $('#cap4a').style.opacity = ca.toFixed(3);
+      $('#s4shade').style.opacity = p(t, 15.9, 16.4).toFixed(3);
+      const cb = rise($('#cap4b'), t, 16.35, .6, 26) * (1 - p(t, 18.9, 19.2));
+      $('#cap4b').style.opacity = cb.toFixed(3);
+      const bk = eob(p(t, 17.45, 17.95));
+      const bd = $('#badge');
+      bd.style.opacity = (cl(p(t, 17.45, 17.65)) * (1 - p(t, 18.9, 19.2))).toFixed(3);
+      bd.style.transform = `scale(${(.7 + .3 * bk).toFixed(4)})`;
+      rise($('#cap4c'), t, 19.25, .6, 26);
+      // transcript lines appear one by one
+      lines.forEach((ln, i) => {
+        const st = 15.0 + i * .62;
+        const k = eo(p(t, st, st + .45));
+        ln.style.opacity = k.toFixed(3);
+        ln.style.transform = `translateY(${((1 - k) * 8).toFixed(2)}px)`;
+      });
+      // click the timestamp of line 2: the player jumps there and plays
+      const playing = t >= 19.62;
+      $('#rwPlay').style.display = playing ? 'none' : '';
+      $('#rwPause').style.display = playing ? '' : 'none';
+      const pos = playing ? 6 + (t - 19.62) : 0; // seconds into a 24:12 call
+      const sec = Math.floor(pos);
+      $('#rwTime').textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+      const frac = pos / (24 * 60 + 12);
+      $('#rwFill').style.width = (frac * 100).toFixed(2) + '%';
+      $('#rwKnob').style.left = (459 + 400 * frac).toFixed(2) + 'px';
+      if (t > 18.9 && t < 21.1) {
+        const r = relRect(lines[1].querySelector('.ts'));
+        const tx2 = r.x + r.w * .5, ty2 = r.y + r.h * .6;
+        const k = eio(p(t, 18.95, 19.55));
+        const x = bez(1300, 1150, tx2, k), y = bez(1000, 760, ty2, k);
+        const press = Math.max(0, 1 - Math.abs(t - 19.6) / .1);
+        cur = { x, y, o: env(t, 18.9, 21.1, .25, .4) * (1 - out), press };
+        if (t > 19.58 && t < 20.1) cur.rip = [tx2, ty2, p(t, 19.58, 20.05)];
+      }
+    }
+  }
+
+  /* ===== Scene 5: trust + CTA 20.95 - 25 ===== */
+  {
+    const o = env(t, 20.95, 99, .3, .1);
+    S.s5.style.display = o > 0 ? '' : 'none';
+    if (o > 0) {
+      S.s5.style.opacity = o.toFixed(3);
+      const up = eio(p(t, 22.95, 23.45));
+      const h5 = $('#h5'), h5b = $('#h5b');
+      words(h5, t, 21.05, .34, .5, 70);
+      rise(h5b, t, 22.15, .6, 30);
+      h5.style.transform = `translateY(${(-up * 120).toFixed(1)}px)`;
+      h5.style.opacity = (1 - up).toFixed(3);
+      h5.style.filter = up > .02 ? `blur(${(up * 14).toFixed(1)}px)` : 'none';
+      if (t > 22.95) set(h5b, 1 - up, 0, -up * 120, 1, up * 14);
+
+      const end = $('#end');
+      end.style.opacity = p(t, 23.15, 23.4).toFixed(3);
+      const ik = eob(p(t, 23.2, 23.85));
+      const bi = $('#bigicon');
+      bi.style.opacity = cl(p(t, 23.2, 23.45)).toFixed(3);
+      bi.style.transform = `translateY(${((1 - ik) * 40).toFixed(1)}px) scale(${(.6 + .4 * ik).toFixed(4)})`;
+      bi.style.transformOrigin = '50% 50%';
+      const gk = p(t, 23.2, 24.2);
+      $('#glow').style.opacity = (eo(gk) * (.85 + .15 * Math.sin(t * 2))).toFixed(3);
+      $('#glow').style.transform = `scale(${(.7 + .3 * eo(gk)).toFixed(4)})`;
+      rise($('#word'), t, 23.55, .7, 40);
+      rise($('#tag'), t, 23.9, .6, 24);
+      rise($('#req'), t, 24.15, .6, 18);
+    }
+  }
+
+  /* cursor */
+  if (cur) { showCursor(cur.x, cur.y, cur.o, cur.press); const r = cur.rip; r ? showRipple(r[0], r[1], r[2]) : showRipple(0, 0, 0); }
+  else { cursor.style.opacity = 0; showRipple(0, 0, 0); }
+}
+window.render = render;
+window.DUR = DUR;
+
+/* ---------- fit to window ---------- */
+function fit2() {
+  const s = Math.min(innerWidth / 1920, innerHeight / 1080);
+  stage.style.left = ((innerWidth - 1920 * s) / 2) + 'px';
+  stage.style.top = ((innerHeight - 1080 * s) / 2) + 'px';
+  stage.style.transform = `scale(${s})`;
+}
+addEventListener('resize', fit2); fit2();
+
+/* ---------- playback ---------- */
+const qs = new URLSearchParams(location.search);
+const freezeT = qs.has('t') ? parseFloat(qs.get('t')) : null;
+const capture = qs.has('capture');
+const btn = $('#replay');
+let t0 = 0, raf = 0, hideTimer = 0;
+
+function showBtn(ms) {
+  if (capture || freezeT !== null) return;
+  btn.classList.add('on'); clearTimeout(hideTimer);
+  if (ms) hideTimer = setTimeout(() => btn.classList.remove('on'), ms);
+}
+function loop(now) {
+  const t = (now - t0) / 1000;
+  render(t);
+  if (t < DUR) raf = requestAnimationFrame(loop); else showBtn(0);
+}
+function play() {
+  cancelAnimationFrame(raf);
+  t0 = performance.now();
+  raf = requestAnimationFrame(loop);
+  showBtn(2200);
+}
+btn.addEventListener('click', play);
+addEventListener('mousemove', () => { if (btn.classList.contains('on') && !hideTimer) return; showBtn(1800); });
+addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'r') play(); });
+
+render(freezeT ?? 0);
+document.fonts.ready.then(() => {
+  window.__ready = true;
+  if (freezeT !== null) render(freezeT);
+  else if (!capture) play();
+});
+</script>
+</body>
+</html>

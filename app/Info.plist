@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>CallRec</string>
+  <key>CFBundleDisplayName</key><string>CallRec</string>
+  <key>CFBundleIdentifier</key><string>app.callrec.CallRec</string>
+  <key>CFBundleExecutable</key><string>CallRec</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleShortVersionString</key><string>1.1</string>
+  <key>CFBundleVersion</key><string>2</string>
+  <key>LSMinimumSystemVersion</key><string>14.2</string>
+  <key>LSUIElement</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>CallRec records your side of the call.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key><string>CallRec names each recording after the meeting on your calendar. Nothing leaves your Mac.</string>
+  <key>NSCalendarsUsageDescription</key><string>CallRec names each recording after the meeting on your calendar. Nothing leaves your Mac.</string>
+  <key>NSAudioCaptureUsageDescription</key><string>CallRec records the other side of the call (what your Mac plays).</string>
+</dict>
+</plist>

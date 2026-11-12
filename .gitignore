@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.DS_Store
+build/
+promo/node_modules/
+promo/.claude/

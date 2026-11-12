@@ -1,0 +1,1460 @@
+#!/usr/bin/env -S UV_MANAGED_PYTHON=1 uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["catap>=0.6.1"]
+# ///
+"""callrec: record every call on your Mac (your mic + everything the Mac plays) and
+transcribe it locally. Hebrew uses the ivrit.ai model, English uses Whisper large-v3-turbo.
+
+Usage:
+  callrec                      auto mode: waits for a meeting, records it, transcribes it
+  callrec NAME                 record now (stops on Enter or when the meeting ends)
+  callrec list                 what you recorded
+  callrec transcribe FILE...   transcribe any audio file (transcript next to it)
+  callrec import FILE...       add an audio/video file to your recordings and transcribe it
+  callrec recover [FOLDER...]  finish recordings that were cut off
+  callrec selftest             record 5 seconds and check both sides come through
+  callrec doctor               check setup
+"""
+from __future__ import annotations
+
+import argparse
+import array
+import datetime as dt
+import json
+import os
+import re
+import select
+import shutil
+import signal
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HOME = Path.home()
+SELF = Path(__file__).resolve()
+REC_DIR = Path(os.environ.get("CALLREC_DIR", HOME / "CallRecordings"))
+TOOLS = HOME / ".callrec/bin"
+os.environ["PATH"] = os.pathsep.join([str(TOOLS), os.environ.get("PATH", "")])
+MODELS = HOME / ".callrec/models"
+MODEL_HE = Path(os.environ.get("CALLREC_MODEL_HE", os.environ.get("CALLREC_MODEL", MODELS / "ivrit-whisper-large-v3-turbo.bin")))
+MODEL_EN = Path(os.environ.get("CALLREC_MODEL_EN", MODELS / "ggml-large-v3-turbo-q8_0.bin"))
+VAD_MODEL = MODELS / "ggml-silero-v5.1.2.bin"  # skips silence, so Whisper doesn't invent text there
+# Telling apart the voices on the other side (pyannote segmentation + NeMo TitaNet, via sherpa-onnx).
+# Off: with a fixed threshold one real person often split into several "speakers". To experiment, set
+# CALLREC_SPEAKERS=1, add "sherpa-onnx" and "numpy" to the dependencies above, and put the two models below.
+SPEAKERS = os.environ.get("CALLREC_SPEAKERS") == "1"
+# "Mute me in the recording": the app appends "on <epoch>" / "off <epoch>" lines here.
+MUTE_LOG = HOME / ".callrec/mute-log"
+SPK_SEG = MODELS / "speaker-segmentation.onnx"
+SPK_EMB = MODELS / "speaker-embedding.onnx"
+SPK_THRESHOLD = float(os.environ.get("CALLREC_SPEAKER_THRESHOLD", "0.6"))  # lower = more speakers
+MIC = os.environ.get("CALLREC_MIC", "default")  # avfoundation audio device name or index
+LANG = os.environ.get("CALLREC_LANG", "auto")  # auto, he, en, ...
+END_GRACE = int(os.environ.get("CALLREC_END_GRACE", "60"))  # seconds after the call app is gone before auto stop
+SILENCE_STOP = int(os.environ.get("CALLREC_SILENCE_STOP", "900"))  # stop after this long with nothing heard
+LABELS = {"he": ("אני", "הצד השני"), "en": ("Me", "Them")}
+EVENTS = os.environ.get("CALLREC_EVENTS") == "1"  # JSON status lines on stdout, for the menu bar app
+AUTO_OFF = HOME / ".callrec/auto-off"  # exists = don't start recordings on your own
+APP_PID = int(os.environ.get("CALLREC_APP_PID", "0") or 0)  # the menu bar app that started us
+
+
+def app_gone() -> bool:
+    """True if we were started by the menu bar app and it is no longer running."""
+    if not APP_PID:
+        return False
+    try:
+        os.kill(APP_PID, 0)
+        return False
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+
+# Apps whose microphone use means "a meeting is on". Matched as bundle id prefixes.
+MEETING_APPS = {
+    "us.zoom.xos": "Zoom",
+    "com.microsoft.teams": "Teams",
+    "com.tinyspeck.slackmacgap": "Slack",
+    "com.google.Chrome": "Chrome",
+    "com.apple.WebKit": "Safari",
+    "com.apple.Safari": "Safari",
+    "company.thebrowser": "Arc",
+    "org.mozilla.firefox": "Firefox",
+    "com.microsoft.edgemac": "Edge",
+    "com.brave.Browser": "Brave",
+    "com.apple.FaceTime": "FaceTime",
+    "com.apple.avconferenced": "FaceTime",
+    "net.whatsapp.WhatsApp": "WhatsApp",
+    "com.hnc.Discord": "Discord",
+    "com.cisco.webex": "Webex",
+    "Cisco-Systems.Spark": "Webex",
+}
+
+
+# ---------- helpers ----------
+
+def die(msg: str) -> None:
+    print(f"✖ {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def need(tool: str) -> str:
+    path = shutil.which(tool)
+    if not path:
+        die(f"'{tool}' not found. Run the CallRec installer (see README) or setup.sh.")
+    return path
+
+
+def whisper_bin() -> str:
+    for name in ("whisper-cli", "whisper-cpp"):
+        if shutil.which(name):
+            return name
+    die("whisper.cpp not found. Run the CallRec installer (see README) or setup.sh.")
+    return ""
+
+
+def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, check=True, **kw)
+
+
+def ff(*args: str) -> None:
+    run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args])
+
+
+def probe(path: Path) -> tuple[float, int]:
+    out = run(["ffprobe", "-v", "error", "-show_entries", "stream=channels:format=duration",
+               "-of", "json", str(path)], capture_output=True, text=True).stdout
+    data = json.loads(out)
+    duration = float(data.get("format", {}).get("duration", 0) or 0)
+    streams = data.get("streams") or [{}]
+    return duration, int(streams[0].get("channels", 1) or 1)
+
+
+def slug(text: str) -> str:
+    return re.sub(r"[^\w\-]+", "-", text, flags=re.UNICODE).strip("-")[:40]
+
+
+def has_call(folder: Path) -> bool:
+    return (folder / "call.wav").exists() or (folder / "call.m4a").exists()
+
+
+def call_file(folder: Path) -> Path | None:
+    # call.wav is removed only after call.m4a is checked to be complete, so while both exist
+    # the WAV is the full recording and the m4a may be a cut-off leftover.
+    for name in ("call.wav", "call.m4a"):
+        if (folder / name).exists():
+            return folder / name
+    return None
+
+
+def has_audio(path: Path) -> bool:
+    return path.exists() and path.stat().st_size > 1024
+
+
+def fmt_dur(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+DISCREET = HOME / ".callrec/discreet"  # exists = no pop-ups (screen sharing)
+
+
+def notify(text: str) -> None:
+    if EVENTS or DISCREET.exists():  # the app is always discreet: no pop-ups during or after calls
+        return
+    text = text.replace('"', "'")
+    subprocess.run(["osascript", "-e", f'display notification "{text}" with title "callrec"'],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def read_meta(folder: Path) -> dict:
+    try:
+        return json.loads((folder / "meta.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def write_meta(folder: Path, **fields) -> dict:
+    meta = read_meta(folder) | fields
+    (folder / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+    return meta
+
+
+# ---------- meeting detection ----------
+
+def call_apps() -> tuple[set[str], set[str]]:
+    """(call apps using the mic, call apps using the mic or playing audio) right now."""
+    from catap import list_audio_processes
+
+    using_mic, active = set(), set()
+    for p in list_audio_processes():
+        bundle = p.bundle_id or ""
+        name = next((n for prefix, n in MEETING_APPS.items() if bundle.startswith(prefix)), None)
+        if not name:
+            continue
+        if p.is_inputting:
+            using_mic.add(name)
+        if p.is_inputting or p.is_outputting:
+            active.add(name)
+    return using_mic, active
+
+
+def audio_devices() -> tuple[str | None, str | None]:
+    """Names of the current default mic and output (headphones or speakers)."""
+    try:
+        from catap import list_audio_devices
+
+        devs = list_audio_devices()
+        mic = next((d.name for d in devs if d.is_default_input), None)
+        out = next((d.name for d in devs if d.is_default_output), None)
+        return mic, out
+    except Exception:
+        return None, None
+
+
+def meeting_app(include_output: bool = False) -> str | None:
+    """Name of a meeting app that is using the mic right now (or playing audio, if include_output)."""
+    from catap import list_audio_processes
+
+    for p in list_audio_processes():
+        if not (p.is_inputting or (include_output and p.is_outputting)):
+            continue
+        bundle = p.bundle_id or ""
+        for prefix, name in MEETING_APPS.items():
+            if bundle.startswith(prefix):
+                return name
+    return None
+
+
+# ---------- terminal / signals ----------
+
+class Hangup(Exception):
+    """The terminal closed (SIGHUP) or someone sent SIGTERM."""
+
+
+def _on_hangup(signum, frame) -> None:
+    # Once is enough: a repeat signal while we are already saving must not interrupt the save.
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    raise Hangup()
+
+
+def terminal_alive() -> bool:
+    try:
+        os.close(os.open("/dev/tty", os.O_RDWR))
+        return True
+    except OSError:
+        return False
+
+
+def detach_output(log_path: Path) -> None:
+    """The terminal is gone: send our output (and our children's) to a log file."""
+    log = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
+    os.dup2(log, 1)
+    os.dup2(log, 2)
+    sys.stdout = os.fdopen(1, "w", buffering=1, encoding="utf-8", closefd=False)
+    sys.stderr = os.fdopen(2, "w", buffering=1, encoding="utf-8", closefd=False)
+
+
+def enter_pressed() -> bool:
+    """Non-blocking check for Enter. Raises Hangup if the terminal went away."""
+    try:
+        if not sys.stdin.isatty():
+            return False  # run by the app or from a script: only signals stop us
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+        if not ready:
+            return False
+        if sys.stdin.readline() == "" and not terminal_alive():
+            raise Hangup()
+        return True
+    except (OSError, ValueError):
+        if not terminal_alive():
+            raise Hangup()
+        return False
+
+
+def status(line: str) -> None:
+    try:
+        if sys.stdout.isatty():
+            sys.stdout.write("\r\033[K" + line)
+            sys.stdout.flush()
+    except OSError:
+        pass
+
+
+def emit(**event) -> None:
+    if EVENTS:
+        try:
+            sys.stdout.write(json.dumps(event, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+        except OSError:
+            pass
+
+
+class Control:
+    """Requests from the menu bar app: SIGUSR1 = record now, SIGUSR2 = stop recording."""
+    start = False
+    stop = False
+
+
+def _on_usr1(signum, frame) -> None:
+    Control.start = True
+
+
+def _on_usr2(signum, frame) -> None:
+    Control.stop = True
+
+
+def tail_peak(path: Path, seconds: float = 3.0) -> float | None:
+    """Loudest sample (0..1) in the last few seconds of a WAV that is still being written."""
+    try:
+        layout = wav_layout(path)
+        if not layout:
+            return None
+        raw, rate, ch, offset = layout
+        width = {"s16le": 2, "s32le": 4, "f32le": 4}.get(raw)
+        if not width:
+            return None
+        size = path.stat().st_size
+        n = int(rate * ch * seconds) * width
+        if size - offset < n:
+            return None
+        with open(path, "rb") as f:
+            f.seek(size - n - (size - offset) % width)
+            data = f.read(n)
+        a = array.array({"s16le": "h", "s32le": "i", "f32le": "f"}[raw])
+        a.frombytes(data[: len(data) // width * width])
+        full = {"s16le": 32768.0, "s32le": 2147483648.0, "f32le": 1.0}[raw]
+        return max((abs(x) for x in a), default=0) / full
+    except (OSError, ValueError, struct.error):
+        return None
+
+
+class Health:
+    """Watches the files while recording, so a problem shows up during the call, not after it."""
+
+    def __init__(self, rec: "Recorder"):
+        self.rec = rec
+        self.mic_zero_since: float | None = None
+        self.sys_heard = False
+        self.warned: set[str] = set()
+        self.last_check = 0.0
+        self.last_sound = time.time()  # last time anyone was heard on either side
+
+    def check(self) -> None:
+        now = time.time()
+        if self.rec.sys_error:
+            self.warn("system-error", "The other side is not being recorded (only your mic). Allow CallRec "
+                                      "in System Settings > Privacy & Security > Screen & System Audio Recording.")
+        if now - self.last_check < 5 or now - self.rec.started < 10:
+            return
+        self.last_check = now
+        seg = self.rec.folder / self.rec.segments[-1][0] if self.rec.segments else None
+        mic_peak = tail_peak(seg) if seg and seg.exists() else None
+        # A real mic always has some noise; pure digital zero means no permission or a dead device.
+        if mic_peak == 0:
+            self.mic_zero_since = self.mic_zero_since or now
+            if now - self.mic_zero_since > 15:
+                self.warn("mic", "Your microphone is not being recorded. Check Microphone access "
+                                 "for CallRec (or your terminal) in System Settings.")
+        elif mic_peak:
+            self.mic_zero_since = None
+        if (mic_peak or 0) > 0.05:  # speech, not room noise
+            self.last_sound = now
+        tmps = sorted(self.rec.folder.glob(".system.wav.*.tmp"), key=lambda p: p.stat().st_mtime)
+        sys_peak = tail_peak(tmps[-1], 5) if tmps else None
+        if sys_peak:
+            self.sys_heard = True
+        if (sys_peak or 0) > 0.005:
+            self.last_sound = now
+        if not self.sys_heard and now - self.rec.started > 90:
+            self.warn("system", "No sound from the other side in the first 90 seconds. If people are "
+                                "talking, check System Audio Recording access.")
+
+    def warn(self, key: str, message: str) -> None:
+        if key in self.warned:
+            return
+        self.warned.add(key)
+        print(f"⚠ {message}")
+        emit(state="warning", message=message, folder=str(self.rec.folder))
+        if not EVENTS:
+            notify(message)
+
+
+# ---------- recording ----------
+
+class Recorder:
+    """Mic (ffmpeg) + system audio (Core Audio tap). If the mic device disappears mid-call
+    (headphones unplugged, AirPods switched), ffmpeg is restarted on the new default mic."""
+
+    def __init__(self, folder: Path):
+        self.folder = folder
+        self.sys_path = folder / "system.wav"
+        self.segments: list[tuple[str, float]] = []  # (file name, start offset in seconds)
+        self.mic: subprocess.Popen | None = None
+        self.session = None
+        self.started = 0.0
+        self.mic_started = 0.0
+        self.next_retry = 0.0
+        self.sys_error: str | None = None
+
+    def _start_mic(self) -> None:
+        name = f"mic_{len(self.segments) + 1:02d}.wav"
+        offset = time.time() - self.started
+        self.mic_started = time.time()
+        self.mic = subprocess.Popen(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "avfoundation",
+             "-i", f":{MIC}", "-ac", "1", "-ar", "48000", str(self.folder / name)],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, start_new_session=True,
+        )
+        self.segments.append((name, round(offset, 3)))
+        write_meta(self.folder, mic_segments=self.segments)
+        # If callrec itself dies (even SIGKILL), stop ffmpeg so the file is finalized
+        # and nothing keeps recording in the background.
+        watch = (f"while kill -0 {os.getpid()} 2>/dev/null && kill -0 {self.mic.pid} 2>/dev/null; "
+                 f"do sleep 1; done; kill -INT {self.mic.pid} 2>/dev/null")
+        subprocess.Popen(["/bin/sh", "-c", watch], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def start(self) -> None:
+        from catap import record_system_audio
+
+        self.folder.mkdir(parents=True, exist_ok=True)
+        self.started = time.time()
+        mic_name, out_name = audio_devices()
+        write_meta(self.folder, started=dt.datetime.now().isoformat(timespec="seconds"),
+                   started_at=self.started, mic=mic_name, output=out_name)
+        self._start_mic()
+        # If the other side can't be captured (permission, device error), keep recording the mic
+        # and say so right away, instead of losing the whole recording.
+        try:
+            self.session = record_system_audio(str(self.sys_path), mono=True)
+            self.session.start()
+        except Exception as e:
+            self.session = None
+            self.sys_error = str(e)
+            print(f"⚠ system audio failed to start: {e}", file=sys.stderr)
+
+    def tick(self) -> None:
+        if self.mic and self.mic.poll() is not None:  # mic device went away: follow the new default
+            now = time.time()
+            if now - self.mic_started < 5 and not self.next_retry:
+                self.next_retry = now + 10  # failed right away (no permission / no device): back off
+            if now >= self.next_retry:
+                self.next_retry = 0.0
+                self._start_mic()
+
+    def stop(self) -> None:
+        try:
+            if self.session:
+                self.session.stop()
+        except Exception as e:  # keep going so the mic file is still saved
+            print(f"⚠ system audio stop failed: {e}", file=sys.stderr)
+        finally:
+            if self.mic:
+                stop_ffmpeg(self.mic)
+        write_meta(self.folder, ended=dt.datetime.now().isoformat(timespec="seconds"),
+                   duration=round(time.time() - self.started, 1))
+
+    @property
+    def silent_system(self) -> bool:
+        return bool(self.sys_error) or bool(getattr(self.session, "captured_only_silence", False))
+
+
+def stop_ffmpeg(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        proc.stdin.write(b"q")
+        proc.stdin.close()
+    except (BrokenPipeError, OSError):
+        pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.send_signal(signal.SIGINT)  # ffmpeg still finalizes the WAV header on SIGINT
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
+def import_file(src: Path) -> Path:
+    """Bring in any audio or video file (phone recording, voice memo, exported meeting) as a recording
+    in ~/CallRecordings, named after the file and dated when it was recorded, then transcribe it."""
+    if not src.is_file():
+        die(f"No such file: {src}")
+    when = dt.datetime.fromtimestamp(src.stat().st_mtime)
+    folder = REC_DIR / f"{when:%Y-%m-%d_%H%M}_{slug(src.stem)[:40] or 'Imported'}"
+    n = 2
+    while folder.exists():
+        folder = folder.with_name(f"{folder.name.rsplit('~', 1)[0]}~{n}")
+        n += 1
+    folder.mkdir(parents=True)
+    (folder / ".transcribing").write_text(str(os.getpid()))  # shows up in the Recordings window right away
+    write_meta(folder, started=when.isoformat(timespec="seconds"), app="Imported", title=src.stem,
+               imported_from=src.name)
+    wav = folder / "call.wav"
+    try:
+        # One channel: we don't know which side is which in someone else's file.
+        ff("-i", str(src), "-vn", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", str(wav))
+        write_meta(folder, duration=round(probe(wav)[0], 1))
+        return transcribe(wav, folder)
+    except BaseException as e:
+        (folder / ".transcribing").unlink(missing_ok=True)
+        (folder / ".transcribe-failed").write_text(f"{type(e).__name__}: {e}"[:300], encoding="utf-8")
+        raise
+
+
+def new_folder(label: str | None) -> Path:
+    stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M")
+    folder = REC_DIR / (f"{stamp}_{slug(label)}" if label else stamp)
+    n = 2
+    while folder.exists():
+        folder = folder.with_name(f"{folder.name.rsplit('~', 1)[0]}~{n}")
+        n += 1
+    return folder
+
+
+def record_once(folder: Path, app: str | None, follow_meeting: bool) -> tuple[Recorder, str]:
+    """Record until Enter, Ctrl+C, terminal close, or (follow_meeting) the meeting ends.
+    Returns the recorder and why it stopped: enter, ctrl-c, hangup or ended."""
+    rec = Recorder(folder)
+    reason = "enter"
+    try:
+        rec.start()
+        write_meta(folder, app=app)
+        Control.stop = False
+        emit(state="recording", app=app, folder=str(folder), started=rec.started)
+        if not EVENTS:
+            notify(f"Recording{' ' + app if app else ''}")
+        print(f"● Recording to {folder}")
+        print("  Enter or Ctrl+C stops. Closing the terminal also stops and saves.")
+        seen_app, last_active = app, time.time()
+        health = Health(rec)
+        try:  # drop keys typed while we were waiting, so they don't stop this recording
+            import termios
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        except Exception:
+            pass
+        while True:
+            if app_gone():
+                raise Hangup()
+            if enter_pressed() or Control.stop:
+                Control.stop = False
+                break
+            rec.tick()
+            health.check()
+            if follow_meeting:
+                # Only an app that used the mic counts as a call (a browser playing a video does not).
+                using_mic, active = call_apps()
+                if not seen_app and using_mic:
+                    seen_app = sorted(using_mic)[0]
+                    write_meta(folder, app=seen_app)
+                    emit(state="recording", app=seen_app, folder=str(folder), started=rec.started)
+                if seen_app and seen_app in active:
+                    last_active = time.time()
+                elif seen_app and time.time() - last_active > END_GRACE:
+                    status("")
+                    print(f"\n■ {seen_app} call ended")
+                    reason = "ended"
+                    break
+            if time.time() - health.last_sound > SILENCE_STOP:
+                status("")
+                print(f"\n■ Nothing heard for {SILENCE_STOP // 60} minutes")
+                reason = "silence"
+                break
+            status(f"● {fmt_dur(time.time() - rec.started)}  {seen_app or ''}")
+            time.sleep(1)
+    except KeyboardInterrupt:
+        reason = "ctrl-c"
+    except Hangup:
+        reason = "hangup"
+    finally:
+        # From here on, nothing may interrupt finalizing the files.
+        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, signal.SIG_IGN)
+        if reason == "hangup":
+            detach_output(folder / "callrec.log")
+            print(f"[{dt.datetime.now():%H:%M:%S}] terminal closed, finalizing")
+        rec.stop()
+    status("")
+    print(f"\n■ Stopped after {fmt_dur(time.time() - rec.started)}")
+    emit(state="saving", folder=str(folder))
+    return rec, reason
+
+
+def finish(rec: Recorder, transcribe_mode: str, keep_tracks: bool) -> Path | None:
+    """Merge tracks, then transcribe: 'inline', 'background' or 'none'."""
+    folder = rec.folder
+    if rec.silent_system:
+        print("⚠ System audio was silent. Grant your terminal 'System Audio Recording' "
+              "(System Settings > Privacy & Security > Screen & System Audio Recording) and restart it.")
+    call = build_call(folder, keep_tracks)
+    if not call:
+        print("⚠ Nothing was recorded. Grant your terminal Microphone access.")
+        emit(state="error", message="Nothing was recorded. Check Microphone access.", folder=str(folder))
+        return None
+    if rec.silent_system:
+        emit(state="warning", message="The other side was silent. Check System Audio Recording access.",
+             folder=str(folder))
+    print(f"✔ Audio: {call}")
+    emit(state="saved", folder=str(folder), transcribing=transcribe_mode != "none")
+    if transcribe_mode == "inline":
+        transcribe(call, folder)
+    elif transcribe_mode == "background":
+        log = open(folder / "callrec.log", "a")
+        subprocess.Popen([str(SELF), "transcribe", "--notify", str(call)], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+        print("… Transcribing in the background (you'll get a notification)")
+    return call
+
+
+def mute_ranges(folder: Path) -> list[tuple[float, float]]:
+    """When you muted yourself in this recording: [(from, to)] in seconds from its start."""
+    meta = read_meta(folder)
+    t0 = meta.get("started_at")
+    if t0 is None and meta.get("started"):
+        t0 = dt.datetime.fromisoformat(meta["started"]).timestamp()
+    if t0 is None or not MUTE_LOG.exists():
+        return []
+    events = []
+    for line in MUTE_LOG.read_text().splitlines():
+        try:
+            what, when = line.split()
+            events.append((float(when), what == "on"))
+        except ValueError:
+            continue
+    events.sort()
+    ranges, muted, since = [], False, 0.0
+    for when, on in events:
+        rel = max(0.0, when - t0)
+        if on and not muted:
+            muted, since = True, rel
+        elif not on and muted:
+            muted = False
+            if rel > since:
+                ranges.append((since, rel))
+    if muted:
+        ranges.append((since, 1e7))  # still muted when the recording ended
+    return [(a, b) for a, b in ranges if b > 0]
+
+
+def mute_filter(ranges: list[tuple[float, float]]) -> str:
+    if not ranges:
+        return ""
+    cond = "+".join(f"between(t,{a:.2f},{b:.2f})" for a, b in ranges)
+    return f"volume=0:enable='{cond}',"
+
+
+def build_call(folder: Path, keep_tracks: bool = False) -> Path | None:
+    """mic segments + system.wav → call.wav (left = you, right = the other side)."""
+    mic_path, sys_path, call = folder / "mic.wav", folder / "system.wav", folder / "call.wav"
+    segments = [(folder / n, off) for n, off in read_meta(folder).get("mic_segments", [])
+                if has_audio(folder / n)]
+    if segments:
+        if len(segments) == 1 and segments[0][1] < 0.5:
+            segments[0][0].replace(mic_path)
+        else:
+            ins, graph = [], []
+            for i, (p, off) in enumerate(segments):
+                ins += ["-i", str(p)]
+                ms = int(off * 1000)
+                graph.append(f"[{i}:a]adelay={ms}:all=1[s{i}]")
+            graph.append("".join(f"[s{i}]" for i in range(len(segments)))
+                         + f"amix=inputs={len(segments)}:normalize=0:duration=longest[m]")
+            ff(*ins, "-filter_complex", ";".join(graph), "-map", "[m]", "-ac", "1", str(mic_path))
+            for p, _ in segments:
+                p.unlink(missing_ok=True)
+    mic_ok, sys_ok = has_audio(mic_path), has_audio(sys_path)
+    if not (mic_ok or sys_ok):
+        return None
+    muted = mute_ranges(folder)
+    if muted:
+        write_meta(folder, muted=[[round(a, 1), round(min(b, 1e6), 1)] for a, b in muted])
+    silence_me = mute_filter(muted)  # your mic is silent in the recording while you were muted
+    if mic_ok != sys_ok:
+        extra = ["-af", silence_me.rstrip(",")] if mic_ok and silence_me else []
+        ff("-i", str(mic_path if mic_ok else sys_path), *extra, "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(call))
+    else:
+        end = max(probe(mic_path)[0], probe(sys_path)[0])
+        chain = f"aresample=16000,pan=mono|c0=c0,apad,atrim=end={end:.3f}"
+        graph = f"[0:a]{silence_me}{chain}[l];[1:a]{chain}[r];[l][r]join=inputs=2:channel_layout=stereo[a]"
+        ff("-i", str(mic_path), "-i", str(sys_path), "-filter_complex", graph, "-map", "[a]",
+           "-c:a", "pcm_s16le", str(call))
+    if not keep_tracks:
+        mic_path.unlink(missing_ok=True)
+        sys_path.unlink(missing_ok=True)
+    return call
+
+
+def record_now(name: str | None, transcribe_after: bool, keep_tracks: bool, open_after: bool) -> None:
+    need("ffmpeg")
+    warn_orphans()
+    signal.signal(signal.SIGHUP, _on_hangup)
+    signal.signal(signal.SIGTERM, _on_hangup)
+    app = meeting_app()
+    rec, reason = record_once(new_folder(name or app), app, follow_meeting=True)
+    hung_up = reason == "hangup"
+    mode = "none" if not transcribe_after else ("background" if hung_up else "inline")
+    finish(rec, mode, keep_tracks)
+    if open_after and not hung_up:
+        subprocess.run(["open", str(rec.folder)])
+
+
+def auto(transcribe_after: bool, keep_tracks: bool) -> None:
+    """Wait for meetings and record each one, for as long as this runs.
+    The menu bar app runs this too and steers it with SIGUSR1/SIGUSR2 and ~/.callrec/auto-off."""
+    need("ffmpeg")
+    recover_leftovers()
+    compact_old()
+    resume_unfinished()
+    signal.signal(signal.SIGHUP, _on_hangup)
+    signal.signal(signal.SIGTERM, _on_hangup)
+    signal.signal(signal.SIGUSR1, _on_usr1)
+    signal.signal(signal.SIGUSR2, _on_usr2)
+    if not EVENTS:
+        print("callrec is on. Every call (Zoom, Meet, Slack, Teams, FaceTime, WhatsApp...) is recorded "
+              "and transcribed automatically.")
+        print("Ctrl+C to quit. Recordings go to", REC_DIR)
+    paused = False  # stopped by hand: don't restart until that meeting ends
+    try:
+        while True:
+            state, app, since = None, None, None
+            while True:
+                if app_gone():
+                    raise Hangup()
+                if Control.start:
+                    Control.start = False
+                    app = meeting_app()
+                    break
+                auto_on = not AUTO_OFF.exists()
+                if paused and not meeting_app(include_output=True):
+                    paused = False
+                want = "paused" if paused else ("waiting" if auto_on else "idle")
+                if want != state:
+                    state = want
+                    emit(state=want)
+                status({"paused": "⏸ Waiting for the current meeting to end",
+                        "idle": "Auto recording is off"}.get(want, f"⏳ Waiting for a meeting  ({dt.datetime.now():%H:%M})"))
+                if auto_on and not paused:
+                    app = meeting_app()
+                    if app and since and time.time() - since >= 3:
+                        break
+                    since = (since or time.time()) if app else None
+                time.sleep(1)
+            status("")
+            print()
+            rec, reason = record_once(new_folder(app), app, follow_meeting=True)
+            finish(rec, "background" if transcribe_after else "none", keep_tracks)
+            if reason in ("hangup", "ctrl-c"):
+                print("callrec is off.")
+                return
+            for sig in (signal.SIGHUP, signal.SIGTERM):
+                signal.signal(sig, _on_hangup)
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+            paused = reason == "enter"
+    except (KeyboardInterrupt, Hangup):
+        status("")
+        emit(state="off")
+        try:
+            print("\nBye.")
+        except OSError:  # the app closed our output pipe; nothing left to tell
+            pass
+
+
+def selftest() -> bool:
+    """Record a few seconds while playing a sound, and check both sides come through.
+    Run once at setup so the permission prompts appear now, not during a call."""
+    need("ffmpeg")
+    folder = HOME / ".callrec/selftest"
+    shutil.rmtree(folder, ignore_errors=True)
+    rec = Recorder(folder)
+    try:
+        rec.start()
+        time.sleep(1.5)
+        for _ in range(2):
+            subprocess.run(["afplay", "/System/Library/Sounds/Glass.aiff"])
+        time.sleep(1.5)
+    finally:
+        rec.stop()
+    segs = [folder / n for n, _ in rec.segments if (folder / n).exists()]
+    mic_ok = any((tail_peak(p, 2) or 0) > 0 for p in segs)
+    sys_ok = has_audio(rec.sys_path) and not rec.silent_system
+    shutil.rmtree(folder, ignore_errors=True)
+    print(f"{'✔' if mic_ok else '✖'} microphone")
+    print(f"{'✔' if sys_ok else '✖'} other side (system audio)")
+    emit(state="selftest", mic=mic_ok, system=sys_ok)
+    return mic_ok and sys_ok
+
+
+def busy(folder: Path) -> bool:
+    """Is a transcription of this folder running right now? (A marker left by a crash or shutdown is not.)"""
+    marker = folder / ".transcribing"
+    if not marker.exists():
+        return False
+    try:
+        os.kill(int(marker.read_text().strip()), 0)
+        return True
+    except (ValueError, OSError):
+        # No live process behind it. Old markers have no PID: trust them only while fresh.
+        if not marker.read_text().strip() and time.time() - marker.stat().st_mtime < 6 * 3600:
+            return True
+        marker.unlink(missing_ok=True)
+        return False
+
+
+def resume_unfinished() -> None:
+    """After a crash, shutdown or update in the middle of transcribing: finish the job in the background.
+    (A cut-off compression needs nothing extra: the full call.wav is kept and compact_old redoes it.)"""
+    if not REC_DIR.exists():
+        return
+    todo = []
+    for folder in sorted(REC_DIR.iterdir()):
+        src = call_file(folder) if folder.is_dir() else None
+        if not src or (folder / "call.transcript.md").exists() or busy(folder):
+            continue
+        meta = read_meta(folder)
+        if (folder / ".transcribe-failed").exists() and meta.get("auto_retries", 0) >= 1:
+            continue  # a real failure: wait for "Try again" instead of retrying on every start
+        write_meta(folder, auto_retries=meta.get("auto_retries", 0) + 1)
+        todo.append(src)
+    if todo:
+        print(f"… Finishing {len(todo)} transcription(s) that were cut off")
+        log = open(todo[0].parent / "callrec.log", "a")
+        subprocess.Popen([str(SELF), "transcribe", "--notify", *map(str, todo)], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+
+
+def compact_old() -> None:
+    """Older recordings that are already transcribed: WAV → m4a, to save disk space."""
+    if not REC_DIR.exists():
+        return
+    for folder in REC_DIR.iterdir():
+        wav = folder / "call.wav"
+        if wav.exists() and (folder / "call.transcript.md").exists() and not busy(folder):
+            try:
+                if compress(wav).suffix == ".m4a":
+                    write_meta(folder, audio="call.m4a")
+            except Exception as e:
+                print(f"⚠ could not compress {folder.name}: {e}")
+
+
+def recover_leftovers() -> None:
+    """A recording cut off by a crash or restart is finished and transcribed on the next start."""
+    if not REC_DIR.exists():
+        return
+    for folder in sorted(REC_DIR.iterdir()):
+        if not folder.is_dir() or has_call(folder):
+            continue
+        if not (list(folder.glob("mic*.wav")) or list(folder.glob(".system.wav.*.tmp")) or (folder / "system.wav").exists()):
+            continue
+        try:
+            recover([folder], transcribe_after=False)
+            call = folder / "call.wav"
+            if call.exists():
+                emit(state="recovered", folder=str(folder))
+                subprocess.Popen([str(SELF), "transcribe", "--notify", str(call)], start_new_session=True,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:  # never block startup on an old folder
+            print(f"⚠ could not recover {folder.name}: {e}")
+
+
+# ---------- recovery ----------
+
+def recorder_pids(folder: Path | None = None) -> list[int]:
+    """ffmpeg processes that callrec started (optionally only those writing into folder)."""
+    pattern = f"ffmpeg .*-f avfoundation .*{re.escape(str(folder or REC_DIR))}"
+    out = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True).stdout
+    return [int(p) for p in out.split()]
+
+
+def warn_orphans() -> None:
+    pids = recorder_pids()
+    if pids:
+        print(f"⚠ An older callrec mic recorder is still running (pid {', '.join(map(str, pids))}). "
+              "Run 'callrec recover' to stop and save it.")
+
+
+def stop_pids(pids: list[int]) -> None:
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGINT)
+        except ProcessLookupError:
+            continue
+        for _ in range(40):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.25)
+
+
+def wav_layout(path: Path) -> tuple[str, int, int, int] | None:
+    """(ffmpeg raw format, rate, channels, data offset) from a WAV header whose sizes were never filled in."""
+    with open(path, "rb") as f:
+        head = f.read(4096)
+    if head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+        return None
+    pos, fmt = 12, None
+    while pos + 8 <= len(head):
+        cid, size = head[pos:pos + 4], struct.unpack("<I", head[pos + 4:pos + 8])[0]
+        if cid == b"fmt ":
+            tag, ch, rate = struct.unpack("<HHI", head[pos + 8:pos + 16])
+            bits = struct.unpack("<H", head[pos + 22:pos + 24])[0]
+            if tag == 0xFFFE:  # WAVE_FORMAT_EXTENSIBLE: real tag is in the subformat GUID
+                tag = struct.unpack("<H", head[pos + 32:pos + 34])[0]
+            raw = {(1, 16): "s16le", (1, 24): "s24le", (1, 32): "s32le", (3, 32): "f32le"}.get((tag, bits))
+            fmt = (raw, rate, ch) if raw else None
+        elif cid == b"data":
+            return (*fmt, pos + 8) if fmt else None
+        pos += 8 + size + (size & 1)
+    return None
+
+
+def repair_wav(src: Path, dst: Path) -> bool:
+    layout = wav_layout(src)
+    if not layout:
+        return False
+    raw, rate, ch, offset = layout
+    ff("-f", raw, "-ar", str(rate), "-ac", str(ch), "-skip_initial_bytes", str(offset),
+       "-i", str(src), "-c:a", "pcm_s16le", str(dst))
+    return has_audio(dst)
+
+
+def wav_ok(path: Path) -> bool:
+    with open(path, "rb") as f:
+        return f.read(8)[4:8] != b"\xff\xff\xff\xff"
+
+
+def recover(folders: list[Path], transcribe_after: bool) -> None:
+    need("ffmpeg")
+    if not folders:
+        folders = sorted(p for p in REC_DIR.iterdir() if p.is_dir() and not has_call(p)) \
+            if REC_DIR.exists() else []
+        if not folders:
+            print("Nothing to recover.")
+            return
+    for folder in folders:
+        print(f"→ {folder}")
+        pids = recorder_pids(folder)
+        if pids:
+            print(f"  stopping leftover mic recorder (pid {', '.join(map(str, pids))})")
+            stop_pids(pids)
+        sys_path = folder / "system.wav"
+        if not has_audio(sys_path):
+            # catap writes to a hidden temp file and renames it on a clean stop.
+            tmps = sorted(folder.glob(".system.wav.*.tmp"), key=lambda p: p.stat().st_size)
+            if tmps and repair_wav(tmps[-1], sys_path):
+                print(f"  recovered system audio from {tmps[-1].name}")
+                for t in tmps:
+                    t.unlink()
+        for mic in [folder / "mic.wav", *folder.glob("mic_*.wav")]:
+            if has_audio(mic) and not wav_ok(mic):
+                fixed = folder / f".{mic.stem}.fixed.wav"
+                if repair_wav(mic, fixed):
+                    fixed.replace(mic)
+                    print(f"  repaired {mic.name}")
+        call = build_call(folder)
+        if not call:
+            print("  nothing recorded here")
+            continue
+        print(f"✔ Audio: {call}")
+        if transcribe_after:
+            transcribe(call, folder)
+
+
+# ---------- transcription ----------
+
+SPEAKER_RE = re.compile(r"^\s*\(speaker (\d|\?)\)\s*")
+TIME_RE = re.compile(r"(\d{2}):(\d{2}):(\d{2})[,.]\d{3}\s*-->")
+SPAN_RE = re.compile(r"(\d\d):(\d\d):(\d\d)[,.](\d\d\d)\s*-->\s*(\d\d):(\d\d):(\d\d)[,.](\d\d\d)")
+
+
+def channel_levels(wav: Path) -> tuple[list[float], list[float]] | None:
+    """Loudness of the left (you) and right (them) channel every 0.1 s, to settle lines Whisper marks "?"."""
+    try:
+        import wave as wavemod
+        with wavemod.open(str(wav)) as w:
+            if w.getnchannels() != 2:
+                return None
+            step = w.getframerate() // 10
+            left: list[float] = []
+            right: list[float] = []
+            while True:
+                a = array.array("h")
+                a.frombytes(w.readframes(step))
+                if len(a) < step * 2:
+                    break
+                l, r = a[0::32], a[1::32]  # every 16th frame is plenty to tell which side is louder
+                left.append(sum(x * x for x in l))
+                right.append(sum(x * x for x in r))
+        return left, right
+    except Exception:
+        return None
+
+
+def speaker_turns(wav: Path, channel: int = 1) -> list[tuple[float, float, int]]:
+    """Who on the other side (right channel; or the only channel of an imported file) talks when:
+    [(start, end, speaker 1..N)].
+    Empty when there is only one voice there, or anything fails (the transcript then says "the other side")."""
+    if not (SPK_SEG.exists() and SPK_EMB.exists()):
+        return []
+    mono = wav.with_name(f"{wav.stem}.them.wav")
+    try:
+        import numpy as np
+        import sherpa_onnx as so
+        import wave as wavemod
+        ff("-i", str(wav), "-af", f"pan=mono|c0=c{channel}", "-ar", "16000", "-c:a", "pcm_s16le", str(mono))
+        with wavemod.open(str(mono)) as w:
+            audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768
+        cfg = so.OfflineSpeakerDiarizationConfig(
+            segmentation=so.OfflineSpeakerSegmentationModelConfig(
+                pyannote=so.OfflineSpeakerSegmentationPyannoteModelConfig(model=str(SPK_SEG)), num_threads=4),
+            embedding=so.SpeakerEmbeddingExtractorConfig(model=str(SPK_EMB), num_threads=4),
+            clustering=so.FastClusteringConfig(num_clusters=-1, threshold=SPK_THRESHOLD),
+            min_duration_on=0.3, min_duration_off=0.5)
+        segs = [(s.start, s.end, s.speaker) for s in so.OfflineSpeakerDiarization(cfg).process(audio).sort_by_start_time()]
+    except Exception as e:
+        print(f"⚠ Speaker separation skipped: {e}")
+        return []
+    finally:
+        mono.unlink(missing_ok=True)
+    total: dict[int, float] = {}
+    for a, b, k in segs:
+        total[k] = total.get(k, 0) + b - a
+    speech = sum(total.values())
+    # A real speaker talks for a while; tiny clusters are the same voice heard differently (laugh, codec).
+    real = {k for k, t in total.items() if t >= max(15.0, 0.05 * speech)}
+    if len(real) < 2:
+        return []
+    fixed = []
+    for i, (a, b, k) in enumerate(segs):
+        if k not in real:  # fold into the nearest segment of a real speaker
+            k = min((x for x in segs if x[2] in real), key=lambda x: min(abs(x[0] - b), abs(a - x[1])))[2]
+        fixed.append((a, b, k))
+    order = {}
+    for _, _, k in fixed:
+        order.setdefault(k, len(order) + 1)  # Speaker 1 = first to talk
+    return [(a, b, order[k]) for a, b, k in fixed]
+
+
+MODEL_NAMES = {"he": "ivrit.ai whisper-large-v3-turbo", "en": "Whisper large-v3-turbo"}
+
+
+def model_for(lang: str) -> Path:
+    return MODEL_HE if lang == "he" or not MODEL_EN.exists() else MODEL_EN
+
+
+def detect_clip(wav: Path, start: float, length: float = 30) -> tuple[str, float]:
+    """Whisper language id on one excerpt: (language, probability)."""
+    clip = wav.with_name(f"{wav.stem}.lang{int(start)}.wav")
+    ff("-ss", f"{start:.1f}", "-t", f"{length:.1f}", "-i", str(wav), "-ac", "1", str(clip))
+    try:
+        out = subprocess.run([whisper_bin(), "-m", str(model_for("en")), "-l", "auto", "-dl", "-f", str(clip)],
+                             capture_output=True, text=True)
+    finally:
+        clip.unlink(missing_ok=True)
+    m = re.search(r"auto-detected language:\s*(\w+)\s*\(p\s*=\s*([\d.]+)", out.stderr + out.stdout)
+    return (m.group(1), float(m.group(2))) if m else ("he", 0.0)
+
+
+def loud_enough(wav: Path, start: float, length: float) -> bool:
+    """Is anyone talking in this stretch? (cheap RMS on the 16 kHz WAV)."""
+    layout = wav_layout(wav)
+    if not layout:
+        return True
+    _, rate, ch, offset = layout
+    with open(wav, "rb") as f:
+        f.seek(offset + int(start * rate) * ch * 2)
+        data = f.read(int(length * rate) * ch * 2)
+    a = array.array("h")
+    a.frombytes(data[: len(data) // 2 * 2])
+    if not a:
+        return False
+    # Loudest channel: on headphones the other side is only on the right.
+    def rms(c: int) -> float:
+        xs = a[c::ch * 8]
+        return (sum(x * x for x in xs) / max(1, len(xs))) ** 0.5 / 32768
+    return max(rms(c) for c in range(ch)) > 0.003
+
+
+def language_runs(wav: Path, duration: float) -> list[tuple[float, float, str]]:
+    """Split a call into stretches of Hebrew and English: [(start, end, lang)].
+    One-language calls (the usual case) come back as a single stretch."""
+    if LANG != "auto":
+        return [(0.0, duration, LANG)]
+    if duration < 90:
+        lang, _ = detect_clip(wav, min(60.0, duration * 0.1))
+        return [(0.0, duration, lang if lang in ("he", "en") else "he")]
+    # Check every 30s (every minute on calls over 20 min). A switch needs 2 checks in a row.
+    step = 30.0 if duration <= 1200 else 60.0
+    starts = [i * step for i in range(int(duration // step) + 1) if i * step < duration - 5]
+    votes: list[tuple[str | None, float]] = []
+    for st in starts:
+        length = min(30.0, duration - st)
+        votes.append(detect_clip(wav, st, length) if loud_enough(wav, st, length) else (None, 0.0))
+    counted = [l for l, _ in votes if l in ("he", "en")]
+    dominant = max(("he", "en"), key=counted.count) if counted else "he"
+    # Switch away from the main language only when Whisper is sure, and for at least 2 checks.
+    labels = [l if l in ("he", "en") and (l == dominant or p >= 0.8) else None for l, p in votes]
+    for i, l in enumerate(labels):
+        if l is None:
+            labels[i] = labels[i - 1] if i and labels[i - 1] else dominant
+    i = 0
+    while i < len(labels):
+        j = i
+        while j < len(labels) and labels[j] == labels[i]:
+            j += 1
+        if labels[i] != dominant and j - i < 2:
+            for k in range(i, j):
+                labels[k] = dominant
+        i = j
+    runs: list[tuple[float, float, str]] = []
+    for st, l in zip(starts, labels):
+        if runs and runs[-1][2] == l:
+            runs[-1] = (runs[-1][0], min(duration, st + step), l)
+        else:
+            runs.append((st, min(duration, st + step), l))
+    runs[-1] = (runs[-1][0], duration, runs[-1][2])
+    return runs
+
+
+SRT_TIME = re.compile(r"(\d\d):(\d\d):(\d\d),(\d\d\d)")
+
+
+def shift_srt(srt: str, offset: float) -> list[str]:
+    """SRT blocks with their timestamps moved by offset seconds (index lines dropped)."""
+    def move(m: re.Match) -> str:
+        t = int(m[1]) * 3600 + int(m[2]) * 60 + int(m[3]) + int(m[4]) / 1000 + offset
+        ms = int(round(t * 1000))
+        return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+    blocks = []
+    for block in re.split(r"\n\s*\n", srt.strip()):
+        lines = [l for l in block.splitlines() if l.strip()]
+        ts = next((i for i, l in enumerate(lines) if "-->" in l), None)
+        if ts is not None:
+            blocks.append("\n".join([SRT_TIME.sub(move, lines[ts]), *lines[ts + 1:]]))
+    return blocks
+
+
+def whisper(wav: Path, lang: str, base: Path, stereo: bool) -> Path:
+    model = model_for(lang)
+    if not model.exists():
+        die(f"Model not found at {model}. Run the CallRec installer (see README) or setup.sh.")
+    cmd = [whisper_bin(), "-m", str(model), "-l", lang, "-f", str(wav), "-osrt", "-of", str(base), "-np", "-pp"]
+    if stereo:
+        cmd.append("-di")  # stereo diarization: left = you, right = the other side
+        # Short lines (split at word boundaries), so each one can be given to the right speaker.
+        cmd += ["-ml", "60", "-sow"]
+    if VAD_MODEL.exists():
+        cmd += ["--vad", "-vm", str(VAD_MODEL)]
+    run(cmd, stdout=subprocess.DEVNULL)
+    return Path(f"{base}.srt")
+
+
+def compress(wav: Path) -> Path:
+    """call.wav → call.m4a (about 30 MB per hour instead of 230 MB). The WAV is removed only
+    after the m4a is checked to be complete."""
+    m4a = wav.with_suffix(".m4a")
+    try:
+        ff("-i", str(wav), "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart", str(m4a))
+    except BaseException as e:
+        # Keep the full WAV; a half-written m4a must not be mistaken for the recording.
+        m4a.unlink(missing_ok=True)
+        print(f"⚠ Could not compress, keeping {wav.name}: {e}")
+        if not isinstance(e, Exception):
+            raise
+        return wav
+    if abs(probe(m4a)[0] - probe(wav)[0]) < 1.0:
+        wav.unlink()
+        return m4a
+    m4a.unlink(missing_ok=True)
+    return wav
+
+
+def transcribe(src: Path, folder: Path | None = None, notify_done: bool = False) -> Path:
+    need("ffmpeg")
+    folder = folder or src.parent
+    duration, channels = probe(src)
+    stereo = channels == 2
+    marker = folder / ".transcribing"
+    marker.write_text(str(os.getpid()))  # who is working on it, so a restart can tell if it was cut off
+    wav = folder / f".{src.stem}.16k.wav"
+    base = folder / f"{src.stem}.transcript"
+    turns: list[tuple[float, float, int]] = []
+    levels = None
+    try:
+        ff("-i", str(src), "-ac", "2" if stereo else "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav))
+        runs = language_runs(wav, duration)
+        langs = sorted({l for _, _, l in runs}, key=lambda l: -sum(e - s for s, e, x in runs if x == l))
+        lang = langs[0]
+        names = " + ".join(MODEL_NAMES.get(l, l) for l in langs)
+        print(f"… Transcribing ({'+'.join(langs)}, {names}, local)")
+        if len(runs) == 1:
+            whisper(wav, lang, base, stereo)
+        else:
+            blocks: list[str] = []
+            for i, (st, en, l) in enumerate(runs):
+                part = folder / f".part{i}.wav"
+                part_base = folder / f".part{i}"
+                ff("-ss", f"{st:.2f}", "-t", f"{en - st:.2f}", "-i", str(wav), "-c:a", "pcm_s16le", str(part))
+                try:
+                    out = whisper(part, l, part_base, stereo)
+                    blocks += shift_srt(out.read_text(encoding="utf-8", errors="replace").replace("\ufffd", ""), st)
+                finally:
+                    part.unlink(missing_ok=True)
+                    Path(f"{part_base}.srt").unlink(missing_ok=True)
+            Path(f"{base}.srt").write_text(
+                "\n\n".join(f"{n + 1}\n{b}" for n, b in enumerate(blocks)) + "\n", encoding="utf-8")
+        if SPEAKERS:
+            print("… Telling apart the voices" + (" on the other side" if stereo else ""))
+            turns = speaker_turns(wav, 1 if stereo else 0)
+        levels = channel_levels(wav) if stereo else None
+    finally:
+        wav.unlink(missing_ok=True)
+        marker.unlink(missing_ok=True)
+
+    if src.name == "call.wav":
+        src = compress(src)
+    srt = Path(f"{base}.srt")
+    md = Path(f"{base}.md")
+    meta = {}
+    if src.stem == "call":
+        meta = write_meta(folder, language="+".join(langs), model=names, audio=src.name,
+                          language_runs=[[round(s, 1), round(e, 1), l] for s, e, l in runs] if len(runs) > 1 else None,
+                          speakers=len({k for _, _, k in turns}) or None)
+    body = srt_to_markdown(srt.read_text(encoding="utf-8", errors="replace").replace("\ufffd", ""), stereo, lang, turns, levels)
+    md.write_text(header(folder, src, duration, "+".join(langs), meta) + body, encoding="utf-8")
+    print(f"✔ Transcript: {md}")
+    if notify_done:
+        notify(f"Transcript ready: {folder.name}")
+    return md
+
+
+def header(folder: Path, src: Path, duration: float, lang: str, meta: dict) -> str:
+    he = lang.startswith("he")
+    started = meta.get("started", "")
+    when = started.replace("T", " ")[:16] if started else ""
+    rows = [
+        ("תאריך" if he else "Date", when),
+        ("משך" if he else "Duration", fmt_dur(duration)),
+        ("אפליקציה" if he else "App", meta.get("app") or ""),
+        ("שפה" if he else "Language", lang),
+        ("מודל" if he else "Model", meta.get("model") or ""),
+        ("מיקרופון" if he else "Microphone", meta.get("mic") or ""),
+        ("שמע" if he else "Audio out", meta.get("output") or ""),
+        ("קובץ שמע" if he else "Audio", src.name),
+    ]
+    lines = [f"# {meta.get('title') or folder.name}", ""] + [f"- **{k}**: {v}" for k, v in rows if v] + ["", "---", ""]
+    return "\n".join(lines) + "\n"
+
+
+# Whisper invents these on silence (Knesset / YouTube training data). Only phrases nobody says
+# in a real call: VAD already skips silence, so this is a last safety net, not a word filter.
+HALLUCINATIONS = ("תודה רבה, אדוני היושב-ראש", "אדוני היושב-ראש", "חברי הכנסת",
+                  "תודה שצפיתם", "Thanks for watching", "Subtitles by")
+
+
+def srt_to_markdown(srt: str, stereo: bool, lang: str = "he",
+                    turns: list[tuple[float, float, int]] | None = None,
+                    levels: tuple[list[float], list[float]] | None = None) -> str:
+    me, them = LABELS.get(lang, LABELS["en"])
+    me, them = os.environ.get("CALLREC_ME", me), os.environ.get("CALLREC_THEM", them)
+    labels = {"0": me, "1": them, "?": "?"}
+    speaker_word = "דובר" if lang == "he" else "Speaker"
+
+    def seconds(span: re.Match) -> tuple[float, float]:
+        g = [int(x) for x in span.groups()]
+        return (g[0] * 3600 + g[1] * 60 + g[2] + g[3] / 1000, g[4] * 3600 + g[5] * 60 + g[6] + g[7] / 1000)
+
+    def who(span: re.Match | None) -> str | None:
+        """The other-side speaker who talks most during this line (or the nearest one, in a gap)."""
+        if not (turns and span):
+            return None
+        a, b = seconds(span)
+        best: dict[int, float] = {}
+        for s, e, k in turns:
+            if e > a and s < b:
+                best[k] = best.get(k, 0) + min(e, b) - max(s, a)
+        if not best:
+            near = min(turns, key=lambda t: min(abs(t[0] - b), abs(a - t[1])))
+            if min(abs(near[0] - b), abs(a - near[1])) > 5:
+                return None
+            best = {near[2]: 1.0}
+        return f"{speaker_word} {max(best, key=best.get)}"
+
+    def louder(span: re.Match | None) -> str:
+        """Both of you talked at once ("?"): give the line to the louder side."""
+        if not (levels and span):
+            return "?"
+        a, b = seconds(span)
+        i, j = int(a * 10), max(int(b * 10), int(a * 10) + 1)
+        left, right = sum(levels[0][i:j]), sum(levels[1][i:j])
+        return "0" if left >= right else "1"
+
+    parsed = []  # (timestamp, speaker id, text)
+    for block in re.split(r"\n\s*\n", srt.strip()):
+        lines = [l for l in block.splitlines() if l.strip()]
+        ts_i = next((i for i, l in enumerate(lines) if "-->" in l), None)
+        if ts_i is None:
+            continue
+        m = TIME_RE.search(lines[ts_i])
+        ts = f"{m.group(1)}:{m.group(2)}:{m.group(3)}" if m else ""
+        text = " ".join(lines[ts_i + 1:]).strip()
+        sm = SPEAKER_RE.match(text)
+        spk = sm.group(1) if sm else ""
+        text = text[sm.end():].strip() if sm else text
+        if text:
+            span = SPAN_RE.search(lines[ts_i])
+            if spk == "?":
+                spk = louder(span)
+            name = who(span) if spk == "1" or not stereo else None
+            parsed.append((ts, name or spk, text))
+
+    def junk(text: str) -> bool:
+        key = text.strip(" .,!?")
+        return len(key.split()) <= 8 and any(key.startswith(h) for h in HALLUCINATIONS)
+
+    paragraphs: list[tuple[str, str, list[str]]] = []
+    for ts, spk, text in parsed:
+        if junk(text):
+            continue
+        speaker = labels.get(spk, spk) if spk else ""
+        if paragraphs and paragraphs[-1][0] == speaker and (stereo or len(paragraphs[-1][2]) < 6):
+            paragraphs[-1][2].append(text)
+        else:
+            paragraphs.append((speaker, ts, [text]))
+
+    out = [f"**{s}** ({ts}): {' '.join(t)}" if s else f"{' '.join(t)} ({ts})" for s, ts, t in paragraphs]
+    return "\n\n".join(out) + "\n"
+
+
+# ---------- list ----------
+
+def list_recordings() -> None:
+    if not REC_DIR.exists():
+        print("No recordings yet.")
+        return
+    folders = sorted((p for p in REC_DIR.iterdir() if p.is_dir()), reverse=True)
+    if not folders:
+        print("No recordings yet.")
+        return
+    for folder in folders:
+        meta = read_meta(folder)
+        md = folder / "call.transcript.md"
+        if md.exists():
+            state = "✔"
+        elif (folder / ".transcribing").exists():
+            state = "…"
+        elif has_call(folder):
+            state = "♪"
+        else:
+            state = "✖"
+        dur = meta.get("duration")
+        if not dur and call_file(folder):
+            dur = probe(call_file(folder))[0]
+        preview = ""
+        if md.exists():
+            text = md.read_text(encoding="utf-8", errors="replace").replace("\ufffd", "").split("---", 1)[-1]
+            text = re.sub(r"\*\*(.+?)\*\* \(\d\d:\d\d:\d\d\):", r"\1:", text)
+            preview = re.sub(r"\(\d\d:\d\d:\d\d\)|\s+", " ", text).strip()[:70]
+        print(f"{state} {folder.name:<32} {fmt_dur(dur or 0):>8}  {meta.get('language', ''):<3} {preview}")
+    print(f"\n✔ transcribed   … transcribing   ♪ audio only   ✖ incomplete (run 'callrec recover')\n{REC_DIR}")
+
+
+# ---------- doctor ----------
+
+def doctor() -> None:
+    ok = True
+    for tool in ("ffmpeg", "ffprobe"):
+        found = shutil.which(tool)
+        print(f"{'✔' if found else '✖'} {tool}")
+        ok &= bool(found)
+    w = next((n for n in ("whisper-cli", "whisper-cpp") if shutil.which(n)), None)
+    print(f"{'✔' if w else '✖'} whisper.cpp ({w or 'missing'})")
+    ok &= bool(w)
+    for label, model, required in (("Hebrew (ivrit.ai)", MODEL_HE, True), ("English", MODEL_EN, False)):
+        print(f"{'✔' if model.exists() else '✖'} {label} model {model}")
+        ok &= model.exists() or not required
+    try:
+        import catap  # noqa: F401
+        print("✔ catap")
+        app = meeting_app()
+        print(f"  meeting detection works ({'now: ' + app if app else 'no meeting right now'})")
+    except Exception as e:  # pragma: no cover
+        print(f"✖ catap ({e})")
+        ok = False
+    print("\nMic devices (callrec uses the system default; set CALLREC_MIC to override):", flush=True)
+    listing = subprocess.run(["ffmpeg", "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+                             capture_output=True, text=True).stderr
+    audio = listing.split("audio devices:", 1)[-1] if "audio devices:" in listing else ""
+    for line in audio.splitlines():
+        m = re.search(r"\]\s*(\[\d+\].*)$", line)
+        if m:
+            print(f"  {m.group(1)}")
+    if recorder_pids():
+        print("\n⚠ A leftover mic recorder is running. Run 'callrec recover'.")
+        ok = False
+    sys.exit(0 if ok else 1)
+
+
+# ---------- CLI ----------
+
+def main() -> None:
+    argv = sys.argv[1:]
+    cmd = argv[0] if argv else ""
+    if cmd == "import":
+        files = [a for a in argv[1:] if not a.startswith("--")]
+        if not files:
+            die("Usage: callrec import FILE [FILE ...]")
+        for f in files:
+            import_file(Path(f).expanduser().resolve())
+        return
+    if cmd == "transcribe":
+        files = [a for a in argv[1:] if not a.startswith("--")]
+        if not files:
+            die("Usage: callrec transcribe FILE [FILE ...]")
+        for f in files:
+            src = Path(f).expanduser().resolve()
+            failed = src.parent / ".transcribe-failed"
+            failed.unlink(missing_ok=True)
+            try:
+                transcribe(src, notify_done="--notify" in argv)
+            except BaseException as e:
+                # Leave a note for the Recordings window, so a failure is never silent.
+                failed.write_text(f"{type(e).__name__}: {e}"[:300], encoding="utf-8")
+                raise
+        return
+    if cmd == "recover":
+        rest = [a for a in argv[1:] if not a.startswith("--")]
+        recover([Path(f).expanduser().resolve() for f in rest], "--no-transcribe" not in argv)
+        return
+    if cmd == "doctor":
+        doctor()
+        return
+    if cmd == "selftest":
+        sys.exit(0 if selftest() else 1)
+    if cmd == "list":
+        list_recordings()
+        return
+
+    p = argparse.ArgumentParser(prog="callrec", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("name", nargs="?", help="record right now with this label (omit for auto mode)")
+    p.add_argument("--no-transcribe", action="store_true", help="only record")
+    p.add_argument("--keep-tracks", action="store_true", help="keep separate mic.wav and system.wav")
+    p.add_argument("--open", action="store_true", help="open the folder when done")
+    a = p.parse_args(argv)
+    if a.name:
+        record_now(a.name, not a.no_transcribe, a.keep_tracks, a.open)
+    else:
+        auto(not a.no_transcribe, a.keep_tracks)
+
+
+if __name__ == "__main__":
+    main()

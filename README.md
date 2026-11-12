@@ -22,7 +22,7 @@ Open Terminal and paste:
 
 Needs an Apple Silicon Mac (M1 or newer) and macOS 14.2 or newer. No Homebrew, no admin password.
 
-The command installs the CallRec app in Applications (or `~/Applications` if you can't write to Applications), its tools in `~/.callrec/bin` (uv, ffmpeg, ffprobe, whisper-cli), the transcription models in `~/.callrec/models` (about 2.5 GB, once; an ivrit.ai model you already have from OpenSuperWhisper or Vibe is reused) and the `callrec` command, then opens the app. Every download is pinned to an exact version and checked with sha256, and an interrupted download resumes when you run the command again. To update, run the same command again.
+The command installs the CallRec app in Applications (or `~/Applications` if you can't write to Applications), its tools in `~/.callrec/bin` (uv, ffmpeg, ffprobe, whisper-cli), the transcription models in `~/.callrec/models` (about 2.5 GB, once; an ivrit.ai model you already have from OpenSuperWhisper or Vibe is reused) and the `callrec` command, then opens the app. Every file the installer downloads is pinned to an exact version and checked with sha256, and an interrupted model download resumes when you run the command again. On the first run, uv also downloads Python and the [catap](https://pypi.org/project/catap/) package for the CallRec engine. To update, run the same command again.
 
 The first time CallRec opens it records a 5 second test, and macOS asks for **Microphone** and **System Audio Recording** access. Allow both.
 
@@ -31,7 +31,13 @@ Good to know about the install:
 - CallRec is not signed with an Apple developer account. Files downloaded with `curl` are not marked as downloaded from the internet, so macOS opens the app without the "Open Anyway" step. (If you download `CallRec.zip` from the Releases page in a browser instead, macOS blocks it the first time: open System Settings > Privacy & Security and click **Open Anyway**. Then choose **Finish setup** in the menu bar icon.)
 - The same missing developer signature means that to macOS every update is a new app, so after an update it may ask for Microphone and System Audio Recording again.
 - Where the tools come from: uv is the official release from Astral. ffmpeg 9.0.2 (LGPL, only macOS frameworks) and whisper-cli 1.9.5 (Metal) are built from their official sources by [tools/build-tools.sh](tools/build-tools.sh); the exact sources, checksums and licenses are in `~/.callrec/licenses`. The models come from fixed revisions on Hugging Face.
-- To uninstall: quit CallRec, then delete CallRec from Applications and the `~/.callrec` folder. Your recordings in `~/CallRecordings` stay.
+- To uninstall: if you turned on **Open at login**, turn it off in the menu first. Quit CallRec, delete it from Applications, then run this in Terminal to remove the `callrec` command, the tools and models, and the app settings:
+
+  ```bash
+  for f in ~/.local/bin/callrec /opt/homebrew/bin/callrec /usr/local/bin/callrec ~/bin/callrec; do [ "$(readlink "$f")" = "$HOME/.callrec/bin/callrec" ] && rm "$f"; done; rm -rf ~/.callrec; defaults delete app.callrec.CallRec
+  ```
+
+  Your recordings in `~/CallRecordings` stay. If you added `~/.callrec/bin` to `~/.zprofile`, remove that line. uv keeps the Python it downloaded under `~/.local/share/uv` and `~/.cache/uv`; delete those only if you don't use uv for anything else.
 
 ## בעברית, בקצרה
 
@@ -91,7 +97,7 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 
 - Your mic: `ffmpeg` (AVFoundation), always the current default mic. If the mic disappears mid-call (AirPods disconnected), it restarts on the new default and the pieces are stitched back in time.
 - The other side: a private Core Audio process tap via [catap](https://pypi.org/project/catap/). It captures what the Mac plays on any output device, does not change your audio settings, and other apps cannot see it.
-- Meeting detection: callrec polls which apps are using the microphone. A known call app (or a browser) using the mic starts a recording; 60 seconds with the app no longer using the mic or playing audio ends it.
+- Meeting detection: callrec polls which apps are using the microphone. A known call app (or a browser) using the mic starts a recording; 60 seconds (5 minutes in the app) with the app no longer using the mic or playing audio ends it.
 - Transcription: `whisper.cpp` with Silero VAD (skips silence, so Whisper doesn't invent text), stereo diarization for "me / them", and the right model for each language. Long calls are checked every 30 seconds, so a stretch of English inside a Hebrew call goes to the English model.
 
 ## Settings (optional, env vars)

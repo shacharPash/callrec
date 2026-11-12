@@ -8,6 +8,10 @@ Record every call on your Mac and get a transcript, automatically. Free, fully l
 - Speakers: "you" (your mic) and "the other side" (what your Mac plays). Click a name in the transcript to rename it.
 - Nothing leaves your computer.
 
+## Before you record
+
+Recording laws differ by country, and in some places by state. In Israel a participant may record a conversation they take part in; elsewhere you may need everyone's consent, and your workplace may have its own rules. You are responsible for following the laws and policies that apply to you and to the people on the call. When in doubt, tell everyone at the start that you are recording.
+
 ## Install
 
 Open Terminal and paste:
@@ -39,6 +43,8 @@ Good to know about the install:
 
 אחרי ההתקנה האפליקציה יושבת בשורת התפריטים. מתחילים הקלטה מהאייקון או עם Ctrl+Option+R, או מדליקים "Start automatically when a call starts" ואז כל שיחה (זום, מיט, סלאק, טימס, וואטסאפ ועוד) מוקלטת לבד: ההקלטה מתחילה כשהשיחה מתחילה, נעצרת כשהיא נגמרת, והתמלול מוכן כעבור כמה שניות. עברית מתומללת עם ivrit.ai ואנגלית עם Whisper, והכל נשאר על המחשב. לעדכון מריצים שוב את אותה פקודה, ואחרי עדכון ייתכן שמקוס יבקש שוב הרשאה למיקרופון ולהקלטת שמע.
 
+חשוב לדעת: בישראל מותר למשתתף בשיחה להקליט אותה, אבל במדינות אחרות ייתכן שצריך הסכמה של כל המשתתפים, ולמקום העבודה עשויים להיות כללים משלו. האחריות לעמוד בחוק ובכללים היא שלכם, ובמקרה של ספק כדאי לומר בתחילת השיחה שהיא מוקלטת.
+
 ## The app
 
 From the menu bar icon (or **Ctrl+Option+R** from anywhere): **Start recording**, **Stop recording**. **Show all recordings…** opens a window with every call: details (date, duration, app, language, model, mic and headphones), the transcript, a player (click a line to jump there), search, Rename, and Move to Trash. To transcribe a recording you already have (a phone call, a voice memo, an exported meeting), drag the file into that window or choose **Import recording…**. Turn on **Name recordings from Calendar** in the menu and each recording is named after the meeting on your calendar at that time (asks for Calendar access once; works with any calendar added to the macOS Calendar app).
@@ -47,7 +53,7 @@ CallRec lives in the menu bar only (no Dock icon). If you don't see its icon, th
 
 Muted yourself in the meeting to talk to someone in the room? Press **Ctrl+Option+M** (or Mute me in the recording in the menu): your mic is silent in the recording until you press it again, the other side keeps recording, and the icon shows a crossed-out mic. The meeting apps don't tell other apps when you mute, so this is a separate switch.
 
-While recording, the icon only turns filled, with no timer and no pop-ups, so nothing shows if you share your screen. A recording stops by itself 5 minutes after the call app is gone, or after 15 minutes with nothing heard on either side.
+While recording, the icon only turns filled, with no timer and no pop-ups, so it stays out of the way when you share your screen. That keeps your screen clean; it is not a way to record people without telling them (see [Before you record](#before-you-record)). A recording stops by itself 5 minutes after the call app is gone, or after 15 minutes with nothing heard on either side.
 
 ## Command line
 
@@ -109,7 +115,7 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 
 - On speakers (no headphones) your mic also hears the other side, so a few of their lines may be labeled as you. Headphones give the cleanest result.
 - macOS shows its own recording indicator in the menu bar while callrec records. Only you see it.
-- Recording laws differ by country. In Israel a participant may record a conversation they take part in; elsewhere you may need everyone's consent. Check your workplace policy too.
+- Recording laws differ by country: see [Before you record](#before-you-record).
 
 ## License
 

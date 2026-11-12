@@ -8,6 +8,10 @@ Record every call on your Mac and get a transcript, automatically. Free, fully l
 - Speakers: "you" (your mic) and "the other side" (what your Mac plays). Click a name in the transcript to rename it.
 - Nothing leaves your computer.
 
+## Before you record
+
+Recording laws differ by country, and in some places by state. In Israel a participant may record a conversation they take part in; elsewhere you may need everyone's consent, and your workplace may have its own rules. You are responsible for following the laws and policies that apply to you and to the people on the call. When in doubt, tell everyone at the start that you are recording.
+
 ## Install
 
 Open Terminal and paste:
@@ -18,7 +22,7 @@ Open Terminal and paste:
 
 Needs an Apple Silicon Mac (M1 or newer) and macOS 14.2 or newer. No Homebrew, no admin password.
 
-The command installs the CallRec app in Applications (or `~/Applications` if you can't write to Applications), its tools in `~/.callrec/bin` (uv, ffmpeg, ffprobe, whisper-cli), the transcription models in `~/.callrec/models` (about 2.5 GB, once; an ivrit.ai model you already have from OpenSuperWhisper or Vibe is reused) and the `callrec` command, then opens the app. Every download is pinned to an exact version and checked with sha256, and an interrupted download resumes when you run the command again. To update, run the same command again.
+The command installs the CallRec app in Applications (or `~/Applications` if you can't write to Applications), its tools in `~/.callrec/bin` (uv, ffmpeg, ffprobe, whisper-cli), the transcription models in `~/.callrec/models` (about 2.5 GB, once; an ivrit.ai model you already have from OpenSuperWhisper or Vibe is reused) and the `callrec` command, then opens the app. Every file the installer downloads is pinned to an exact version and checked with sha256, and an interrupted model download resumes when you run the command again. On the first run, uv also downloads Python and the [catap](https://pypi.org/project/catap/) package for the CallRec engine. To update, run the same command again.
 
 The first time CallRec opens it records a 5 second test, and macOS asks for **Microphone** and **System Audio Recording** access. Allow both.
 
@@ -27,7 +31,13 @@ Good to know about the install:
 - CallRec is not signed with an Apple developer account. Files downloaded with `curl` are not marked as downloaded from the internet, so macOS opens the app without the "Open Anyway" step. (If you download `CallRec.zip` from the Releases page in a browser instead, macOS blocks it the first time: open System Settings > Privacy & Security and click **Open Anyway**. Then choose **Finish setup** in the menu bar icon.)
 - The same missing developer signature means that to macOS every update is a new app, so after an update it may ask for Microphone and System Audio Recording again.
 - Where the tools come from: uv is the official release from Astral. ffmpeg 9.0.2 (LGPL, only macOS frameworks) and whisper-cli 1.9.5 (Metal) are built from their official sources by [tools/build-tools.sh](tools/build-tools.sh); the exact sources, checksums and licenses are in `~/.callrec/licenses`. The models come from fixed revisions on Hugging Face.
-- To uninstall: quit CallRec, then delete CallRec from Applications and the `~/.callrec` folder. Your recordings in `~/CallRecordings` stay.
+- To uninstall: if you turned on **Open at login**, turn it off in the menu first. Quit CallRec, delete it from Applications, then run this in Terminal to remove the `callrec` command, the tools and models, and the app settings:
+
+  ```bash
+  for f in ~/.local/bin/callrec /opt/homebrew/bin/callrec /usr/local/bin/callrec ~/bin/callrec; do [ "$(readlink "$f")" = "$HOME/.callrec/bin/callrec" ] && rm "$f"; done; rm -rf ~/.callrec; defaults delete app.callrec.CallRec
+  ```
+
+  Your recordings in `~/CallRecordings` stay. If you added `~/.callrec/bin` to `~/.zprofile`, remove that line. uv keeps the Python it downloaded under `~/.local/share/uv` and `~/.cache/uv`; delete those only if you don't use uv for anything else.
 
 ## בעברית, בקצרה
 
@@ -39,6 +49,8 @@ Good to know about the install:
 
 אחרי ההתקנה האפליקציה יושבת בשורת התפריטים. מתחילים הקלטה מהאייקון או עם Ctrl+Option+R, או מדליקים "Start automatically when a call starts" ואז כל שיחה (זום, מיט, סלאק, טימס, וואטסאפ ועוד) מוקלטת לבד: ההקלטה מתחילה כשהשיחה מתחילה, נעצרת כשהיא נגמרת, והתמלול מוכן כעבור כמה שניות. עברית מתומללת עם ivrit.ai ואנגלית עם Whisper, והכל נשאר על המחשב. לעדכון מריצים שוב את אותה פקודה, ואחרי עדכון ייתכן שמקוס יבקש שוב הרשאה למיקרופון ולהקלטת שמע.
 
+חשוב לדעת: בישראל מותר למשתתף בשיחה להקליט אותה, אבל במדינות אחרות ייתכן שצריך הסכמה של כל המשתתפים, ולמקום העבודה עשויים להיות כללים משלו. האחריות לעמוד בחוק ובכללים היא שלכם, ובמקרה של ספק כדאי לומר בתחילת השיחה שהיא מוקלטת.
+
 ## The app
 
 From the menu bar icon (or **Ctrl+Option+R** from anywhere): **Start recording**, **Stop recording**. **Show all recordings…** opens a window with every call: details (date, duration, app, language, model, mic and headphones), the transcript, a player (click a line to jump there), search, Rename, and Move to Trash. To transcribe a recording you already have (a phone call, a voice memo, an exported meeting), drag the file into that window or choose **Import recording…**. Turn on **Name recordings from Calendar** in the menu and each recording is named after the meeting on your calendar at that time (asks for Calendar access once; works with any calendar added to the macOS Calendar app).
@@ -47,7 +59,7 @@ CallRec lives in the menu bar only (no Dock icon). If you don't see its icon, th
 
 Muted yourself in the meeting to talk to someone in the room? Press **Ctrl+Option+M** (or Mute me in the recording in the menu): your mic is silent in the recording until you press it again, the other side keeps recording, and the icon shows a crossed-out mic. The meeting apps don't tell other apps when you mute, so this is a separate switch.
 
-While recording, the icon only turns filled, with no timer and no pop-ups, so nothing shows if you share your screen. A recording stops by itself 5 minutes after the call app is gone, or after 15 minutes with nothing heard on either side.
+While recording, the icon only turns filled, with no timer and no pop-ups, so it stays out of the way when you share your screen. That keeps your screen clean; it is not a way to record people without telling them (see [Before you record](#before-you-record)). A recording stops by itself 5 minutes after the call app is gone, or after 15 minutes with nothing heard on either side.
 
 ## Command line
 
@@ -85,7 +97,7 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 
 - Your mic: `ffmpeg` (AVFoundation), always the current default mic. If the mic disappears mid-call (AirPods disconnected), it restarts on the new default and the pieces are stitched back in time.
 - The other side: a private Core Audio process tap via [catap](https://pypi.org/project/catap/). It captures what the Mac plays on any output device, does not change your audio settings, and other apps cannot see it.
-- Meeting detection: callrec polls which apps are using the microphone. A known call app (or a browser) using the mic starts a recording; 60 seconds with the app no longer using the mic or playing audio ends it.
+- Meeting detection: callrec polls which apps are using the microphone. A known call app (or a browser) using the mic starts a recording; 60 seconds (5 minutes in the app) with the app no longer using the mic or playing audio ends it.
 - Transcription: `whisper.cpp` with Silero VAD (skips silence, so Whisper doesn't invent text), stereo diarization for "me / them", and the right model for each language. Long calls are checked every 30 seconds, so a stretch of English inside a Hebrew call goes to the English model.
 
 ## Settings (optional, env vars)
@@ -109,7 +121,7 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 
 - On speakers (no headphones) your mic also hears the other side, so a few of their lines may be labeled as you. Headphones give the cleanest result.
 - macOS shows its own recording indicator in the menu bar while callrec records. Only you see it.
-- Recording laws differ by country. In Israel a participant may record a conversation they take part in; elsewhere you may need everyone's consent. Check your workplace policy too.
+- Recording laws differ by country: see [Before you record](#before-you-record).
 
 ## License
 

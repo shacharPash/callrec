@@ -220,7 +220,8 @@ ${BOLD}To update later:${RESET} run the same command again. CallRec is not signe
 developer account, so after an update macOS may ask for the two permissions again.
 
 Recording laws differ by country. In Israel a participant may record a conversation they take
-part in; elsewhere you may need everyone's consent. Check your workplace policy too.
+part in; elsewhere you may need everyone's consent. Check your workplace policy too. You are
+responsible for following the rules that apply to you and to the people on the call.
 EOF
 }
 

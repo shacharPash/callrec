@@ -18,10 +18,10 @@ UV_VERSION="0.13.7"
 UV_URL="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-aarch64-apple-darwin.tar.gz"
 UV_SHA256="81b811b57e4624df7ed3aac148e0359100d9962f3d9dce00aec533dc2e086731"
 
-TOOLS_REVISION=1
-TOOLS_TAG="v1.1"
+TOOLS_REVISION=2
+TOOLS_TAG="v1.3"
 TOOLS_NAME="callrec-tools-${TOOLS_REVISION}-macos-arm64"
-TOOLS_SHA256="7cc8cdc02a0964cc251f0eeccabcd40740dae6d7f9f7b532e5f8a20d4ae13ffd"
+TOOLS_SHA256="1542de5aa8ac76c8d8478f4a25c30ffdd876beed1c76bd9375560704fe60be40"
 TOOLS=(ffmpeg ffprobe whisper-cli)
 
 HF="https://huggingface.co"

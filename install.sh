@@ -12,9 +12,9 @@
 set -euo pipefail
 
 APP_NAME="CallRec"
-APP_VERSION="1.2"
+APP_VERSION="1.3"
 APP_BUNDLE_ID="app.callrec.CallRec"
-APP_ZIP_SHA256="d7ea95311a83927f445027eec9df95acbdf926e4c31bdddb536e6546c871a5fd"
+APP_ZIP_SHA256="512a8b833088a9e88a343eee7cb33a8d792c79e84f9b77c53f3e7591d98380f6"
 RELEASE_URL="${CALLREC_RELEASE_URL:-https://github.com/shacharPash/callrec/releases/download}"
 APP_DIR="/Applications"
 

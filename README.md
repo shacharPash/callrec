@@ -53,7 +53,7 @@ Good to know about the install:
 
 ## The app
 
-From the menu bar icon (or **Ctrl+Option+R** from anywhere): **Start recording**, **Stop recording**. **Show all recordings…** opens a window with every call: details (date, duration, app, language, model, mic and headphones), the transcript, a player (click a line to jump there), search, Rename, and Move to Trash. To transcribe a recording you already have (a phone call, a voice memo, an exported meeting), drag the file into that window or choose **Import recording…**. Turn on **Name recordings from Calendar** in the menu and each recording is named after the meeting on your calendar at that time (asks for Calendar access once; works with any calendar added to the macOS Calendar app).
+From the menu bar icon (or **Ctrl+Option+R** from anywhere): **Start recording**, **Stop recording**. **Show all recordings…** opens a window with every call: details (date, duration, app, language, model, mic and headphones), the transcript, a player (click a line to jump there), search, Rename, and Move to Trash. To transcribe a recording you already have (a phone call, a voice memo, an exported meeting), drag the file into that window or choose **Import recording…**. Click the calendar button in that window's toolbar (**Name recordings from Calendar**) and each new recording is named after the meeting on your calendar at that time (asks for Calendar access once; works with any calendar added to the macOS Calendar app).
 
 CallRec lives in the menu bar only (no Dock icon). If you don't see its icon, the menu bar may be full and the notch hides it: open CallRec again from Spotlight or Applications and the Recordings window opens.
 

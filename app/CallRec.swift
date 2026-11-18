@@ -43,13 +43,6 @@ func metaTitle(_ dir: URL) -> String? {
     return t
 }
 
-struct Recording: Identifiable {
-    let id: URL
-    let title: String
-    let transcript: URL?
-    let transcribing: Bool
-}
-
 enum Phase: Equatable {
     case starting
     case needsSetup(String)
@@ -65,7 +58,6 @@ enum Phase: Equatable {
 final class Engine: ObservableObject {
     @Published var phase: Phase = .starting
     @Published var warning: String?
-    @Published var recordings: [Recording] = []
     @Published var now = Date()
     @Published var autoStart: Bool {
         didSet { setAutoFlag(autoStart) }
@@ -127,7 +119,6 @@ final class Engine: ObservableObject {
     private var process: Process?
     private var quitting = false
     private var buffer = Data()
-    private var ticks = 0
     // The engine runs from ~/.callrec/engine, not from inside the app, so updating it does not
     // change the app's signature (which would make macOS ask for permissions again).
     private let engineDir = stateDir.appendingPathComponent("engine")
@@ -173,7 +164,6 @@ final class Engine: ObservableObject {
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
-        refreshRecordings()
         bootstrap()
     }
 
@@ -344,12 +334,10 @@ final class Engine: ObservableObject {
             setMuted(false)  // a mute ends with its recording
             phase = .saving
         case "saved":
-            refreshRecordings()
             if e["transcribing"] as? Bool == true {
                 notify("Recording saved", "Transcribing now. You'll get a notification when it's ready.")
             }
         case "recovered":
-            refreshRecordings()
             notify("Recovered a recording", "A recording that was cut off was saved and is being transcribed.")
         case "warning", "error":
             let msg = e["message"] as? String ?? "Something went wrong"
@@ -459,31 +447,10 @@ final class Engine: ObservableObject {
         }
     }
 
-    // MARK: recordings
+    // MARK: display helpers
 
     func tick() {
         now = Date()
-        ticks += 1
-        if ticks % 5 == 0 { refreshRecordings() }
-    }
-
-    func refreshRecordings() {
-        let fm = FileManager.default
-        guard let dirs = try? fm.contentsOfDirectory(at: recDir, includingPropertiesForKeys: nil) else {
-            recordings = []
-            return
-        }
-        recordings = dirs.filter { $0.hasDirectoryPath }
-            .sorted { $0.lastPathComponent > $1.lastPathComponent }
-            .prefix(8)
-            .map { dir in
-                let md = dir.appendingPathComponent("call.transcript.md")
-                return Recording(
-                    id: dir,
-                    title: Self.title(for: dir),
-                    transcript: fm.fileExists(atPath: md.path) ? md : nil,
-                    transcribing: fm.fileExists(atPath: dir.appendingPathComponent(".transcribing").path))
-            }
     }
 
     /// 2026-11-08_1101_Zoom → "Today 11:01", "Yesterday 11:01", "Nov 8, 11:01" (long: with weekday and year).
@@ -505,26 +472,6 @@ final class Engine: ObservableObject {
             out.dateFormat = cal.isDate(d, equalTo: Date(), toGranularity: .year) ? "MMM d, HH:mm" : "MMM d yyyy, HH:mm"
         }
         return out.string(from: d)
-    }
-
-    static func title(for dir: URL) -> String {
-        // 2026-11-08_1101_Zoom → "Today 11:01 · Zoom · 19 min"
-        let parts = dir.lastPathComponent.split(separator: "_", maxSplits: 2).map(String.init)
-        var title = dir.lastPathComponent
-        if let d = dateText(for: dir, long: false) {
-            title = metaTitle(dir).map { "\($0) · \(d)" } ?? d + (parts.count > 2 ? " · \(parts[2])" : "")
-        }
-        let metaURL = dir.appendingPathComponent("meta.json")
-        if let data = try? Data(contentsOf: metaURL),
-           let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let dur = meta["duration"] as? Double {
-            title += " · \(max(1, Int(dur / 60))) min"
-        }
-        return title
-    }
-
-    func open(_ r: Recording) {
-        NSWorkspace.shared.open(r.transcript ?? r.id)
     }
 
     func notify(_ title: String, _ body: String, force: Bool = false) {
@@ -575,56 +522,72 @@ struct MenuContent: View {
     @EnvironmentObject var library: Library
     @Environment(\.openWindow) private var openWindow
 
-    func showRecordings(_ dir: URL? = nil) {
+    func showRecordings() {
         library.reload()
-        if let dir { library.selection = dir }
         openWindow(id: "recordings")
         NSApp.activate(ignoringOtherApps: true)
     }
 
     var body: some View {
-        Text(engine.statusLine)
-        if let w = engine.warning {
-            Text("⚠︎ " + w)
-        }
-        Divider()
-        switch engine.phase {
-        case .recording:
-            Button("Stop recording   ⌃⌥R") { engine.stopRecording() }
-            Button(engine.mutedMe ? "Unmute me in the recording   ⌃⌥M" : "Mute me in the recording   ⌃⌥M") {
-                engine.toggleMute()
+        Group {
+            Text(engine.statusLine)
+            if let w = engine.warning {
+                Text("⚠︎ " + w)
             }
-        case .ready, .paused:
-            Button("Start recording   ⌃⌥R") { engine.startRecording() }
-        case .needsSetup:
-            Button("Finish setup…") { engine.runSetup() }
-        case .failed:
-            Button("Try again") { engine.bootstrap() }
-        default:
-            EmptyView()
-        }
-        Toggle("Start automatically when a call starts", isOn: $engine.autoStart)
-        Toggle("Name recordings from Calendar", isOn: $engine.calendarTitles)
-        Divider()
-        if !engine.recordings.isEmpty {
-            Text("Recent recordings")
-            ForEach(engine.recordings) { r in
-                Button((r.transcript != nil ? "" : (r.transcribing ? "⏳ " : "♪ ")) + r.title) { showRecordings(r.id) }
+            Divider()
+            switch engine.phase {
+            case .recording:
+                Button { engine.stopRecording() } label: {
+                    Label("Stop recording   ⌃⌥R", systemImage: "stop.fill")
+                }
+                Button { engine.toggleMute() } label: {
+                    Label(engine.mutedMe ? "Unmute me in the recording   ⌃⌥M" : "Mute me in the recording   ⌃⌥M",
+                          systemImage: engine.mutedMe ? "mic" : "mic.slash")
+                }
+            case .ready, .paused:
+                Button { engine.startRecording() } label: {
+                    Label("Start recording   ⌃⌥R", systemImage: "play.fill")
+                }
+            case .needsSetup:
+                Button { engine.runSetup() } label: {
+                    Label("Finish setup…", systemImage: "wrench.and.screwdriver")
+                }
+            case .failed:
+                Button { engine.bootstrap() } label: {
+                    Label("Try again", systemImage: "arrow.clockwise")
+                }
+            default:
+                EmptyView()
             }
-        }
-        Button("Show all recordings…") { showRecordings() }
+            Toggle(isOn: $engine.autoStart) {
+                Label("Start automatically when a call starts", systemImage: "phone.arrow.down.left")
+            }
+            Divider()
+            Button { showRecordings() } label: {
+                Label("Show all recordings…", systemImage: "list.bullet")
+            }
             .keyboardShortcut("o")
-        Button("Import recording…") {
-            showRecordings()
-            DispatchQueue.main.async { library.chooseFiles() }
-        }
-        .keyboardShortcut("i")
-        Divider()
-        Button("Test mic and system audio") { engine.runSelftest() }
+            Button {
+                showRecordings()
+                DispatchQueue.main.async { library.chooseFiles() }
+            } label: {
+                Label("Import recording…", systemImage: "square.and.arrow.down")
+            }
+            .keyboardShortcut("i")
+            Divider()
+            Button { engine.runSelftest() } label: {
+                Label("Test mic and system audio", systemImage: "stethoscope")
+            }
             .disabled(engine.isRecording)
-        Toggle("Open at login", isOn: $engine.openAtLogin)
-        Button("Quit CallRec") { engine.quit() }
+            Toggle(isOn: $engine.openAtLogin) {
+                Label("Open at login", systemImage: "person.crop.circle.badge.checkmark")
+            }
+            Button { engine.quit() } label: {
+                Label("Quit CallRec", systemImage: "power")
+            }
             .keyboardShortcut("q")
+        }
+        .labelStyle(.titleAndIcon)
     }
 }
 
@@ -700,7 +663,7 @@ struct CallRecApp: App {
         }
 
         Window("Recordings", id: "recordings") {
-            RecordingsView().environmentObject(library)
+            RecordingsView().environmentObject(library).environmentObject(engine)
         }
         .defaultSize(width: 980, height: 640)
     }

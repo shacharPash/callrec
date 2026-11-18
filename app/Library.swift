@@ -440,6 +440,7 @@ func formatTime(_ t: Double) -> String {
 
 struct RecordingsView: View {
     @EnvironmentObject var library: Library
+    @EnvironmentObject var engine: Engine
 
     var body: some View {
         NavigationSplitView {
@@ -479,6 +480,15 @@ struct RecordingsView: View {
             }
         }
         .toolbar {
+            ToolbarItem {
+                Toggle(isOn: $engine.calendarTitles) {
+                    Label("Name recordings from Calendar", systemImage: "calendar")
+                }
+                .toggleStyle(.button)
+                .help(engine.calendarTitles
+                      ? "On: each new recording is named after the meeting on your calendar at that time"
+                      : "Off: turn on to name each new recording after the meeting on your calendar at that time")
+            }
             ToolbarItem {
                 Button { library.chooseFiles() } label: {
                     Label("Import recording", systemImage: "square.and.arrow.down")

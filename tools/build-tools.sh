@@ -6,13 +6,14 @@
 #
 # ffmpeg is an LGPL build with no external libraries: it links only macOS frameworks. whisper-cli is
 # static with the Metal shaders embedded, and built for every Apple Silicon Mac, not just this one.
+# ffmpeg gets the small fixes in tools/patches (see the comment at the top of each one).
 # Needs the Xcode Command Line Tools and uv (cmake comes from PyPI through uvx). Apple Silicon only.
 #
 # Usage: tools/build-tools.sh     writes build/callrec-tools-<revision>-macos-arm64.tar.gz
 
 set -euo pipefail
 
-TOOLS_REVISION=1
+TOOLS_REVISION=2
 MIN_MACOS="14.2"
 
 FFMPEG_VERSION="9.0.2"
@@ -82,6 +83,11 @@ build_ffmpeg() {
   fetch "$FFMPEG_URL" "$FFMPEG_SHA256" "ffmpeg-$FFMPEG_VERSION.tar.xz"
   local src="$WORK/ffmpeg-src" prefix="$WORK/ffmpeg-out"
   unpack "ffmpeg-$FFMPEG_VERSION.tar.xz" "$src"
+  local fix
+  for fix in "$ROOT"/tools/patches/ffmpeg-*.patch; do
+    patch -d "$src" -p1 --quiet --forward <"$fix" || die "Could not apply $(basename "$fix")"
+    cp "$fix" "$STAGE/licenses/"
+  done
   rm -rf "$prefix"
   (cd "$src" && ./configure --prefix="$prefix" "${FFMPEG_FLAGS[@]}" >"$WORK/ffmpeg-configure.log" 2>&1) \
     || die "ffmpeg configure failed, see $WORK/ffmpeg-configure.log (and $src/ffbuild/config.log)"
@@ -127,6 +133,7 @@ ffmpeg and ffprobe $FFMPEG_VERSION, LGPL 2.1 (licenses/ffmpeg-LGPL-2.1.txt)
   source: $FFMPEG_URL
   sha256: $FFMPEG_SHA256
   configure: ${FFMPEG_FLAGS[*]}
+  patches: $(cd "$ROOT/tools/patches" && ls ffmpeg-*.patch | tr '\n' ' ')(copies in licenses/)
 
 whisper-cli from whisper.cpp $WHISPER_VERSION, MIT (licenses/whisper.cpp-MIT.txt)
   source: $WHISPER_URL

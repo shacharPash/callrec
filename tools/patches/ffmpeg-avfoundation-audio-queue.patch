@@ -1,0 +1,90 @@
+CallRec patch for ffmpeg 9.0.2, libavdevice/avfoundation.m (applied by tools/build-tools.sh).
+
+The AVFoundation input keeps only the latest audio buffer. When ffmpeg reads a little late, which
+happens all the time because it sleeps 10 ms whenever no packet is waiting, the buffer before is
+replaced and lost. On a MacBook microphone that dropped about 12% of the audio, and the recording
+came out shorter than the call, so your side slowly drifted ahead of the other side.
+
+This keeps the audio buffers in a queue and hands them out in order, so none is lost.
+
+--- a/libavdevice/avfoundation.m
++++ b/libavdevice/avfoundation.m
+@@ -132,6 +132,7 @@
+     AVCaptureAudioDataOutput *audio_output;
+     CMSampleBufferRef         current_frame;
+     CMSampleBufferRef         current_audio_frame;
++    CFMutableArrayRef         audio_queue;
+ 
+     AVCaptureDevice          *observed_device;
+ #if !TARGET_OS_IPHONE && __MAC_OS_X_VERSION_MIN_REQUIRED >= 1070
+@@ -145,6 +146,20 @@
+     pthread_mutex_lock(&ctx->frame_lock);
+ }
+ 
++static void unlock_frames(AVFContext* ctx);
++
++/* Audio buffers wait in a queue until read, so none is lost when the reader is late.
++ * Up to AUDIO_QUEUE_MAX buffers (several seconds); past that the oldest is dropped. */
++#define AUDIO_QUEUE_MAX 2000
++
++static void next_audio_frame(AVFContext* ctx)
++{
++    if (ctx->current_audio_frame == nil && ctx->audio_queue && CFArrayGetCount(ctx->audio_queue) > 0) {
++        ctx->current_audio_frame = (CMSampleBufferRef)CFRetain(CFArrayGetValueAtIndex(ctx->audio_queue, 0));
++        CFArrayRemoveValueAtIndex(ctx->audio_queue, 0);
++    }
++}
++
+ static void unlock_frames(AVFContext* ctx)
+ {
+     pthread_mutex_unlock(&ctx->frame_lock);
+@@ -273,12 +288,14 @@
+ {
+     lock_frames(_context);
+ 
+-    if (_context->current_audio_frame != nil) {
+-        CFRelease(_context->current_audio_frame);
++    if (!_context->audio_queue) {
++        _context->audio_queue = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+     }
++    if (CFArrayGetCount(_context->audio_queue) >= AUDIO_QUEUE_MAX) {
++        CFArrayRemoveValueAtIndex(_context->audio_queue, 0);
++    }
++    CFArrayAppendValue(_context->audio_queue, audioFrame);
+ 
+-    _context->current_audio_frame = (CMSampleBufferRef)CFRetain(audioFrame);
+-
+     unlock_frames(_context);
+ 
+     ++_context->audio_frames_captured;
+@@ -310,6 +327,14 @@
+     if (ctx->current_frame) {
+         CFRelease(ctx->current_frame);
+     }
++    if (ctx->current_audio_frame) {
++        CFRelease(ctx->current_audio_frame);
++        ctx->current_audio_frame = nil;
++    }
++    if (ctx->audio_queue) {
++        CFRelease(ctx->audio_queue);
++        ctx->audio_queue = NULL;
++    }
+ }
+ 
+ static int parse_device_name(AVFormatContext *s)
+@@ -690,6 +715,7 @@
+     }
+ 
+     lock_frames(ctx);
++    next_audio_frame(ctx);
+ 
+     ctx->audio_stream_index = stream->index;
+ 
+@@ -1124,6 +1150,7 @@
+         CVImageBufferRef image_buffer;
+         CMBlockBufferRef block_buffer;
+         lock_frames(ctx);
++        next_audio_frame(ctx);
+ 
+         if (ctx->current_frame != nil) {
+             int status;

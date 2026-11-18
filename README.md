@@ -30,7 +30,7 @@ Good to know about the install:
 
 - CallRec is not signed with an Apple developer account. Files downloaded with `curl` are not marked as downloaded from the internet, so macOS opens the app without the "Open Anyway" step. (If you download `CallRec.zip` from the Releases page in a browser instead, macOS blocks it the first time: open System Settings > Privacy & Security and click **Open Anyway**. Then choose **Finish setup** in the menu bar icon.)
 - The same missing developer signature means that to macOS every update is a new app, so after an update it may ask for Microphone and System Audio Recording again.
-- Where the tools come from: uv is the official release from Astral. ffmpeg 9.0.2 (LGPL, only macOS frameworks) and whisper-cli 1.9.5 (Metal) are built from their official sources by [tools/build-tools.sh](tools/build-tools.sh); the exact sources, checksums and licenses are in `~/.callrec/licenses`. The models come from fixed revisions on Hugging Face.
+- Where the tools come from: uv is the official release from Astral. ffmpeg 9.0.2 (LGPL, only macOS frameworks) and whisper-cli 1.9.5 (Metal) are built from their official sources by [tools/build-tools.sh](tools/build-tools.sh), with one small ffmpeg fix in [tools/patches](tools/patches) so the microphone never drops audio; the exact sources, checksums and licenses are in `~/.callrec/licenses`. The models come from fixed revisions on Hugging Face.
 - To uninstall: if you turned on **Open at login**, turn it off in the menu first. Quit CallRec, delete it from Applications, then run this in Terminal to remove the `callrec` command, the tools and models, and the app settings:
 
   ```bash

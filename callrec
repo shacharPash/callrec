@@ -55,6 +55,9 @@ SPK_SEG = MODELS / "speaker-segmentation.onnx"
 SPK_EMB = MODELS / "speaker-embedding.onnx"
 SPK_THRESHOLD = float(os.environ.get("CALLREC_SPEAKER_THRESHOLD", "0.6"))  # lower = more speakers
 MIC = os.environ.get("CALLREC_MIC", "default")  # avfoundation audio device name or index
+# Place mic audio by its capture timestamps: if ffmpeg ever misses a buffer, that spot becomes a moment
+# of silence instead of pulling everything after it earlier (which drifts your side away from the other side).
+MIC_FILTER = "aresample=async=1:min_hard_comp=0.01:first_pts=0"
 LANG = os.environ.get("CALLREC_LANG", "auto")  # auto, he, en, ...
 END_GRACE = int(os.environ.get("CALLREC_END_GRACE", "60"))  # seconds after the call app is gone before auto stop
 SILENCE_STOP = int(os.environ.get("CALLREC_SILENCE_STOP", "900"))  # stop after this long with nothing heard
@@ -398,6 +401,7 @@ class Recorder:
         self.folder = folder
         self.sys_path = folder / "system.wav"
         self.segments: list[tuple[str, float]] = []  # (file name, start offset in seconds)
+        self.ends: dict[str, float] = {}  # file name -> offset when that segment stopped
         self.mic: subprocess.Popen | None = None
         self.session = None
         self.started = 0.0
@@ -411,7 +415,7 @@ class Recorder:
         self.mic_started = time.time()
         self.mic = subprocess.Popen(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "avfoundation",
-             "-i", f":{MIC}", "-ac", "1", "-ar", "48000", str(self.folder / name)],
+             "-i", f":{MIC}", "-af", MIC_FILTER, "-ac", "1", "-ar", "48000", str(self.folder / name)],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, start_new_session=True,
         )
         self.segments.append((name, round(offset, 3)))
@@ -442,8 +446,15 @@ class Recorder:
             self.sys_error = str(e)
             print(f"⚠ system audio failed to start: {e}", file=sys.stderr)
 
+    def _mark_end(self) -> None:
+        name = self.segments[-1][0] if self.segments else None
+        if name and name not in self.ends:
+            self.ends[name] = round(time.time() - self.started, 3)
+            write_meta(self.folder, mic_ends=self.ends)
+
     def tick(self) -> None:
         if self.mic and self.mic.poll() is not None:  # mic device went away: follow the new default
+            self._mark_end()
             now = time.time()
             if now - self.mic_started < 5 and not self.next_retry:
                 self.next_retry = now + 10  # failed right away (no permission / no device): back off
@@ -460,6 +471,7 @@ class Recorder:
         finally:
             if self.mic:
                 stop_ffmpeg(self.mic)
+                self._mark_end()
         write_meta(self.folder, ended=dt.datetime.now().isoformat(timespec="seconds"),
                    duration=round(time.time() - self.started, 1))
 
@@ -655,11 +667,34 @@ def mute_filter(ranges: list[tuple[float, float]]) -> str:
     return f"volume=0:enable='{cond}',"
 
 
+def fit_mic_segments(folder: Path, segments: list[tuple[Path, float]]) -> None:
+    """A mic segment much shorter than the time it ran lost audio along the way (an old ffmpeg dropped
+    buffers): stretch it back to its real length, so your side stays in step with the other side."""
+    ends = read_meta(folder).get("mic_ends") or {}
+    fixed = []
+    for path, offset in segments:
+        end = ends.get(path.name)
+        if end is None:
+            continue
+        expected, actual = end - offset, probe(path)[0]
+        if expected < 30 or actual <= 0 or actual >= expected * 0.98 or expected - actual < 2:
+            continue
+        fitted = path.with_name(f"{path.stem}.fit.wav")
+        ff("-i", str(path), "-af", f"atempo={actual / expected:.6f}", str(fitted))
+        fitted.replace(path)
+        fixed.append([path.name, round(actual / expected, 4)])
+        print(f"⚠ {path.name} was {expected - actual:.1f}s shorter than the {expected:.0f}s it ran; "
+              "stretched it back to keep both sides in step", file=sys.stderr)
+    if fixed:
+        write_meta(folder, mic_stretched=fixed)
+
+
 def build_call(folder: Path, keep_tracks: bool = False) -> Path | None:
     """mic segments + system.wav → call.wav (left = you, right = the other side)."""
     mic_path, sys_path, call = folder / "mic.wav", folder / "system.wav", folder / "call.wav"
     segments = [(folder / n, off) for n, off in read_meta(folder).get("mic_segments", [])
                 if has_audio(folder / n)]
+    fit_mic_segments(folder, segments)
     if segments:
         if len(segments) == 1 and segments[0][1] < 0.5:
             segments[0][0].replace(mic_path)

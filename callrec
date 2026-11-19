@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import array
 import datetime as dt
+import fcntl
 import json
 import os
 import re
@@ -33,6 +34,8 @@ import signal
 import struct
 import subprocess
 import sys
+import termios
+import threading
 import time
 from pathlib import Path
 
@@ -54,9 +57,13 @@ MUTE_LOG = HOME / ".callrec/mute-log"
 SPK_SEG = MODELS / "speaker-segmentation.onnx"
 SPK_EMB = MODELS / "speaker-embedding.onnx"
 SPK_THRESHOLD = float(os.environ.get("CALLREC_SPEAKER_THRESHOLD", "0.6"))  # lower = more speakers
-MIC = os.environ.get("CALLREC_MIC", "default")  # avfoundation audio device name or index
-# Place mic audio by its capture timestamps: if ffmpeg ever misses a buffer, that spot becomes a moment
-# of silence instead of pulling everything after it earlier (which drifts your side away from the other side).
+MIC = os.environ.get("CALLREC_MIC", "default")  # avfoundation audio device name or index (uses ffmpeg)
+MIC_HELPER = "callrec-mic"  # Apple's audio engine, echo cancelled on speakers (tools/mic-helper)
+# Echo cancellation is on only while the sound goes to speakers; like FaceTime, it makes macOS play other sound a bit softer.
+ECHO_CANCEL = os.environ.get("CALLREC_ECHO_CANCEL", "1") != "0"
+MIC_RATE = 16000
+MIC_GAP = 0.25  # seconds the mic may fall behind the clock before the gap is filled with silence
+# ffmpeg (the fallback) places mic audio by its capture timestamps, so a missed buffer becomes silence.
 MIC_FILTER = "aresample=async=1:min_hard_comp=0.01:first_pts=0"
 LANG = os.environ.get("CALLREC_LANG", "auto")  # auto, he, en, ...
 END_GRACE = int(os.environ.get("CALLREC_END_GRACE", "60"))  # seconds after the call app is gone before auto stop
@@ -393,49 +400,169 @@ class Health:
 
 # ---------- recording ----------
 
+def wav_header(data_bytes: int | None, rate: int = MIC_RATE) -> bytes:
+    """16 bit mono WAV header; None leaves the sizes open (recover repairs a file cut off before close)."""
+    riff, data = (0xFFFFFFFF, 0xFFFFFFFF) if data_bytes is None else (36 + data_bytes, data_bytes)
+    return (b"RIFF" + struct.pack("<I", riff) + b"WAVEfmt "
+            + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16) + b"data" + struct.pack("<I", data))
+
+
+class MicFile:
+    """Your side as a 16 kHz WAV placed by the clock: each piece lands at the time it was captured, and a gap
+    (a device switch, a restart) becomes silence, so your side stays in step with the other side. The clock is
+    time.monotonic(), which stops while the Mac sleeps, as the system audio does."""
+
+    def __init__(self, path: Path, started: float):
+        self.path, self.started, self.frames = path, started, 0
+        self.f = open(path, "wb", buffering=MIC_RATE * 2)  # about a second
+        self.f.write(wav_header(None))
+
+    def write(self, pcm: bytes, t_end: float) -> None:
+        n = len(pcm) // 2
+        start = round((t_end - self.started) * MIC_RATE) - n
+        if start < 0:  # captured before time zero
+            pcm, n, start = pcm[-start * 2:], max(n + start, 0), 0
+        gap = start - self.frames
+        if gap > MIC_GAP * MIC_RATE:
+            while gap > 0:
+                step = min(gap, MIC_RATE)
+                self.f.write(bytes(step * 2))
+                self.frames += step
+                gap -= step
+        self.f.write(pcm[: n * 2])
+        self.frames += n
+
+    def close(self) -> None:
+        self.f.seek(0)
+        self.f.write(wav_header(self.frames * 2))
+        self.f.close()
+
+
+class Mic:
+    """Records your microphone into a MicFile. Uses callrec-mic, which gets every buffer from Apple's audio
+    engine (ffmpeg's AVFoundation input drops some) and, when the sound goes to the speakers, cancels the
+    other side's voice that the mic picks up. Falls back to ffmpeg when the helper is missing or keeps failing,
+    or when CALLREC_MIC names a device. Restarts the capture when it stops or stalls."""
+
+    def __init__(self, folder: Path, started: float):
+        self.file = MicFile(folder / "mic_01.wav", started)
+        self.log = folder / "callrec.log"
+        self.helper = shutil.which(MIC_HELPER) if MIC == "default" else None
+        self.echo_cancel = ECHO_CANCEL
+        self.kinds: list[str] = []
+        self.proc: subprocess.Popen | None = None
+        self.spawned = 0.0
+        self.last_data: float | None = None
+        self.failures = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _command(self) -> tuple[str, list[str]]:
+        if self.helper:
+            return MIC_HELPER, [self.helper] + ([] if self.echo_cancel else ["--no-voice-processing"])
+        return "ffmpeg", ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-f", "avfoundation",
+                          "-i", f":{MIC}", "-af", MIC_FILTER, "-ac", "1", "-ar", str(MIC_RATE),
+                          "-f", "s16le", "-flush_packets", "1", "pipe:1"]
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            kind, cmd = self._command()
+            if not self.kinds or self.kinds[-1] != kind:
+                self.kinds.append(kind)
+            self.spawned, self.last_data = time.monotonic(), None
+            try:
+                with open(self.log, "ab") as log:
+                    proc = self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                                        stderr=log, start_new_session=True, bufsize=0)
+                if self._stop.is_set():  # stop() came while starting
+                    end_process(proc)
+            except OSError as e:
+                print(f"⚠ could not start the microphone ({kind}): {e}", file=sys.stderr)
+                self.helper = None if kind == MIC_HELPER else self.helper
+                self._stop.wait(10)
+                continue
+            try:
+                self._read(proc.stdout.fileno())
+            finally:
+                end_process(proc)
+            if not self._stop.is_set():
+                self._after_exit(kind, proc.returncode, time.monotonic() - self.spawned < 5,
+                                 self.last_data is not None)
+
+    def _read(self, fd: int) -> None:
+        """Audio still waiting in the pipe was captured after what was just read, so a late read does not
+        shift your side: each piece is placed at the time it was captured, not when it was read."""
+        rest = b""
+        while chunk := os.read(fd, MIC_RATE * 2 // 5):  # up to 200 ms at a time
+            now = self.last_data = time.monotonic()
+            data = rest + chunk
+            even = len(data) // 2 * 2
+            data, rest = data[:even], data[even:]
+            try:
+                waiting = struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0\0\0\0"))[0]
+            except OSError:
+                waiting = 0
+            self.file.write(data, now - (waiting + len(rest)) / (2 * MIC_RATE))
+
+    def _after_exit(self, kind: str, code: int, quick: bool, produced: bool) -> None:
+        """Restarts at once after a run that delivered audio, backs off after a quick failure, and leaves a helper
+        that keeps failing for ffmpeg. No input device (4) waits for one to appear. A helper that gives no audio
+        at all (2 says so) runs again without voice processing, the step that fails or hangs."""
+        helper = kind == MIC_HELPER
+        if helper and self.echo_cancel and (code == 2 or (not produced and code != 4)):
+            self.echo_cancel = False
+            why = "is not available on this Mac" if code == 2 else "did not start"
+            print(f"⚠ echo cancellation {why}; recording the mic without it", file=sys.stderr)
+            return
+        if produced and not quick:
+            self.failures = 0
+            return
+        if helper and code != 4:
+            self.failures += 1
+            if self.failures >= 3:
+                self.helper, self.failures = None, 0
+                print(f"⚠ the microphone helper keeps failing (exit code {code}); recording the mic with ffmpeg",
+                      file=sys.stderr)
+                return
+        self._stop.wait(10 if code == 4 or not helper else 1)
+
+    def check(self) -> None:
+        """The helper and ffmpeg write all the time, silence included: no bytes for a while means it is stuck."""
+        proc, last = self.proc, self.last_data
+        if proc is None or proc.poll() is not None or self._stop.is_set():
+            return
+        waited = time.monotonic() - (last or self.spawned)
+        if waited > (10 if last is None else 4):  # voice processing can take a few seconds to start
+            proc.kill()  # nothing to save on its side; SIGTERM waits for its main thread, which may be the stuck part
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self.proc:
+            end_process(self.proc)
+        self._thread.join(timeout=10)
+        self.file.close()
+
+
 class Recorder:
-    """Mic (ffmpeg) + system audio (Core Audio tap). If the mic device disappears mid-call
-    (headphones unplugged, AirPods switched), ffmpeg is restarted on the new default mic."""
+    """Your mic (callrec-mic, or ffmpeg) + system audio (Core Audio tap)."""
 
     def __init__(self, folder: Path):
         self.folder = folder
         self.sys_path = folder / "system.wav"
-        self.segments: list[tuple[str, float]] = []  # (file name, start offset in seconds)
-        self.ends: dict[str, float] = {}  # file name -> offset when that segment stopped
-        self.mic: subprocess.Popen | None = None
+        self.segments: list[tuple[str, float]] = [("mic_01.wav", 0.0)]  # (file name, start offset in seconds)
+        self.mic: Mic | None = None
         self.session = None
         self.started = 0.0
-        self.mic_started = 0.0
-        self.next_retry = 0.0
         self.sys_error: str | None = None
-
-    def _start_mic(self) -> None:
-        name = f"mic_{len(self.segments) + 1:02d}.wav"
-        offset = time.time() - self.started
-        self.mic_started = time.time()
-        self.mic = subprocess.Popen(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "avfoundation",
-             "-i", f":{MIC}", "-af", MIC_FILTER, "-ac", "1", "-ar", "48000", str(self.folder / name)],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, start_new_session=True,
-        )
-        self.segments.append((name, round(offset, 3)))
-        write_meta(self.folder, mic_segments=self.segments)
-        # If callrec itself dies (even SIGKILL), stop ffmpeg so the file is finalized
-        # and nothing keeps recording in the background.
-        watch = (f"while kill -0 {os.getpid()} 2>/dev/null && kill -0 {self.mic.pid} 2>/dev/null; "
-                 f"do sleep 1; done; kill -INT {self.mic.pid} 2>/dev/null")
-        subprocess.Popen(["/bin/sh", "-c", watch], start_new_session=True,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def start(self) -> None:
         from catap import record_system_audio
 
         self.folder.mkdir(parents=True, exist_ok=True)
-        self.started = time.time()
         mic_name, out_name = audio_devices()
-        write_meta(self.folder, started=dt.datetime.now().isoformat(timespec="seconds"),
-                   started_at=self.started, mic=mic_name, output=out_name)
-        self._start_mic()
         # If the other side can't be captured (permission, device error), keep recording the mic
         # and say so right away, instead of losing the whole recording.
         try:
@@ -445,22 +572,16 @@ class Recorder:
             self.session = None
             self.sys_error = str(e)
             print(f"⚠ system audio failed to start: {e}", file=sys.stderr)
-
-    def _mark_end(self) -> None:
-        name = self.segments[-1][0] if self.segments else None
-        if name and name not in self.ends:
-            self.ends[name] = round(time.time() - self.started, 3)
-            write_meta(self.folder, mic_ends=self.ends)
+        # Time zero for both sides: the system audio starts here, and the mic is placed from here.
+        self.started = time.time()
+        self.mic = Mic(self.folder, time.monotonic())
+        self.mic.start()
+        write_meta(self.folder, started=dt.datetime.now().isoformat(timespec="seconds"),
+                   started_at=self.started, mic=mic_name, output=out_name, mic_segments=self.segments)
 
     def tick(self) -> None:
-        if self.mic and self.mic.poll() is not None:  # mic device went away: follow the new default
-            self._mark_end()
-            now = time.time()
-            if now - self.mic_started < 5 and not self.next_retry:
-                self.next_retry = now + 10  # failed right away (no permission / no device): back off
-            if now >= self.next_retry:
-                self.next_retry = 0.0
-                self._start_mic()
+        if self.mic:
+            self.mic.check()
 
     def stop(self) -> None:
         try:
@@ -470,8 +591,8 @@ class Recorder:
             print(f"⚠ system audio stop failed: {e}", file=sys.stderr)
         finally:
             if self.mic:
-                stop_ffmpeg(self.mic)
-                self._mark_end()
+                self.mic.stop()
+                write_meta(self.folder, mic_capture=self.mic.kinds)
         write_meta(self.folder, ended=dt.datetime.now().isoformat(timespec="seconds"),
                    duration=round(time.time() - self.started, 1))
 
@@ -480,20 +601,11 @@ class Recorder:
         return bool(self.sys_error) or bool(getattr(self.session, "captured_only_silence", False))
 
 
-def stop_ffmpeg(proc: subprocess.Popen) -> None:
-    if proc.poll() is not None:
-        return
-    try:
-        proc.stdin.write(b"q")
-        proc.stdin.close()
-    except (BrokenPipeError, OSError):
-        pass
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.send_signal(signal.SIGINT)  # ffmpeg still finalizes the WAV header on SIGINT
+def end_process(proc: subprocess.Popen) -> None:
+    if proc.poll() is None:
+        proc.terminate()
         try:
-            proc.wait(timeout=10)
+            proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
@@ -667,34 +779,11 @@ def mute_filter(ranges: list[tuple[float, float]]) -> str:
     return f"volume=0:enable='{cond}',"
 
 
-def fit_mic_segments(folder: Path, segments: list[tuple[Path, float]]) -> None:
-    """A mic segment much shorter than the time it ran lost audio along the way (an old ffmpeg dropped
-    buffers): stretch it back to its real length, so your side stays in step with the other side."""
-    ends = read_meta(folder).get("mic_ends") or {}
-    fixed = []
-    for path, offset in segments:
-        end = ends.get(path.name)
-        if end is None:
-            continue
-        expected, actual = end - offset, probe(path)[0]
-        if expected < 30 or actual <= 0 or actual >= expected * 0.98 or expected - actual < 2:
-            continue
-        fitted = path.with_name(f"{path.stem}.fit.wav")
-        ff("-i", str(path), "-af", f"atempo={actual / expected:.6f}", str(fitted))
-        fitted.replace(path)
-        fixed.append([path.name, round(actual / expected, 4)])
-        print(f"⚠ {path.name} was {expected - actual:.1f}s shorter than the {expected:.0f}s it ran; "
-              "stretched it back to keep both sides in step", file=sys.stderr)
-    if fixed:
-        write_meta(folder, mic_stretched=fixed)
-
-
 def build_call(folder: Path, keep_tracks: bool = False) -> Path | None:
     """mic segments + system.wav → call.wav (left = you, right = the other side)."""
     mic_path, sys_path, call = folder / "mic.wav", folder / "system.wav", folder / "call.wav"
     segments = [(folder / n, off) for n, off in read_meta(folder).get("mic_segments", [])
                 if has_audio(folder / n)]
-    fit_mic_segments(folder, segments)
     if segments:
         if len(segments) == 1 and segments[0][1] < 0.5:
             segments[0][0].replace(mic_path)
@@ -1414,6 +1503,8 @@ def doctor() -> None:
         found = shutil.which(tool)
         print(f"{'✔' if found else '✖'} {tool}")
         ok &= bool(found)
+    helper = shutil.which(MIC_HELPER)
+    print(f"{'✔' if helper else '!'} {MIC_HELPER} (echo-cancelled mic){'' if helper else ': missing, the mic uses ffmpeg'}")
     w = next((n for n in ("whisper-cli", "whisper-cpp") if shutil.which(n)), None)
     print(f"{'✔' if w else '✖'} whisper.cpp ({w or 'missing'})")
     ok &= bool(w)

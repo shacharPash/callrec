@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Builds the command line tools CallRec runs (ffmpeg, ffprobe, whisper-cli) from their official
-# sources into one archive for the GitHub Release. setup.sh downloads that archive, checks its sha256
+# sources, and CallRec's own microphone helper (callrec-mic, tools/mic-helper), into one archive for the GitHub Release. setup.sh downloads that archive, checks its sha256
 # and puts the tools in ~/.callrec/bin, so nobody needs Homebrew.
 #
 # ffmpeg is an LGPL build with no external libraries: it links only macOS frameworks. whisper-cli is
@@ -110,6 +110,15 @@ build_whisper() {
   cp "$src/LICENSE" "$STAGE/licenses/whisper.cpp-MIT.txt"
 }
 
+build_mic_helper() {
+  step "callrec-mic (the microphone, through Apple's audio engine)"
+  swiftc -O -swift-version 5 -target "arm64-apple-macos$MIN_MACOS" \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$ROOT/tools/mic-helper/Info.plist" \
+    "$ROOT/tools/mic-helper/main.swift" -o "$STAGE/bin/callrec-mic" >"$WORK/mic-helper-build.log" 2>&1 \
+    || die "callrec-mic build failed, see $WORK/mic-helper-build.log"
+  cp "$ROOT/LICENSE" "$STAGE/licenses/callrec-MIT.txt"
+}
+
 check_binaries() {
   step "Checking the binaries"
   local bin lib
@@ -140,6 +149,9 @@ whisper-cli from whisper.cpp $WHISPER_VERSION, MIT (licenses/whisper.cpp-MIT.txt
   sha256: $WHISPER_SHA256
   cmake: ${WHISPER_FLAGS[*]}
 
+callrec-mic, CallRec's microphone helper, MIT (licenses/callrec-MIT.txt)
+  source: tools/mic-helper in the repository below
+
 Build script: tools/build-tools.sh in https://github.com/shacharPash/callrec
 EOF
 }
@@ -150,6 +162,7 @@ main() {
   mkdir -p "$STAGE/bin" "$STAGE/licenses"
   build_ffmpeg
   build_whisper
+  build_mic_helper
   check_binaries
   write_sources
   rm -f "$ARCHIVE"

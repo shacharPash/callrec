@@ -21,8 +21,8 @@ UV_SHA256="81b811b57e4624df7ed3aac148e0359100d9962f3d9dce00aec533dc2e086731"
 TOOLS_REVISION=2
 TOOLS_TAG="v1.3"
 TOOLS_NAME="callrec-tools-${TOOLS_REVISION}-macos-arm64"
-TOOLS_SHA256="1542de5aa8ac76c8d8478f4a25c30ffdd876beed1c76bd9375560704fe60be40"
-TOOLS=(ffmpeg ffprobe whisper-cli)
+TOOLS_SHA256="f868dc1147f62e00b26334d10d1cba52a56805cb8e6b6c2be3ee4ca6618e4b00"
+TOOLS=(ffmpeg ffprobe whisper-cli callrec-mic)
 
 HF="https://huggingface.co"
 HE_FILE="ivrit-whisper-large-v3-turbo.bin"
@@ -160,7 +160,7 @@ tools_present() {
 }
 
 install_tools() {
-  step "ffmpeg and whisper-cli (CallRec tools revision $TOOLS_REVISION)"
+  step "ffmpeg, whisper-cli and the mic helper (CallRec tools revision $TOOLS_REVISION)"
   if tools_present; then
     ok "Up to date"
     return 0

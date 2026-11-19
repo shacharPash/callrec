@@ -3,7 +3,7 @@
 Record every call on your Mac and get a transcript, automatically. Free, fully local, no bot joins the meeting.
 
 - Works with Zoom, Google Meet, Slack huddles, Teams, FaceTime, WhatsApp, Discord, Webex, and any browser call.
-- Works with headphones, AirPods or speakers, and keeps recording if you plug in or unplug them mid-call.
+- Works with headphones, AirPods or speakers, and keeps recording if you plug in or unplug them mid-call. On speakers, Apple's echo cancellation keeps the other side out of your mic.
 - Hebrew is transcribed with the [ivrit.ai](https://huggingface.co/ivrit-ai) model, English with Whisper large-v3-turbo. The language is detected automatically, also when a call switches between Hebrew and English.
 - Speakers: "you" (your mic) and "the other side" (what your Mac plays). Click a name in the transcript to rename it.
 - Nothing leaves your computer.
@@ -22,7 +22,7 @@ Open Terminal and paste:
 
 Needs an Apple Silicon Mac (M1 or newer) and macOS 14.2 or newer. No Homebrew, no admin password.
 
-The command installs the CallRec app in Applications (or `~/Applications` if you can't write to Applications), its tools in `~/.callrec/bin` (uv, ffmpeg, ffprobe, whisper-cli), the transcription models in `~/.callrec/models` (about 2.5 GB, once; an ivrit.ai model you already have from OpenSuperWhisper or Vibe is reused) and the `callrec` command, then opens the app. Every file the installer downloads is pinned to an exact version and checked with sha256, and an interrupted model download resumes when you run the command again. On the first run, uv also downloads Python and the [catap](https://pypi.org/project/catap/) package for the CallRec engine. To update, run the same command again.
+The command installs the CallRec app in Applications (or `~/Applications` if you can't write to Applications), its tools in `~/.callrec/bin` (uv, ffmpeg, ffprobe, whisper-cli, callrec-mic), the transcription models in `~/.callrec/models` (about 2.5 GB, once; an ivrit.ai model you already have from OpenSuperWhisper or Vibe is reused) and the `callrec` command, then opens the app. Every file the installer downloads is pinned to an exact version and checked with sha256, and an interrupted model download resumes when you run the command again. On the first run, uv also downloads Python and the [catap](https://pypi.org/project/catap/) package for the CallRec engine. To update, run the same command again.
 
 The first time CallRec opens it records a 5 second test, and macOS asks for **Microphone** and **System Audio Recording** access. Allow both.
 
@@ -30,7 +30,7 @@ Good to know about the install:
 
 - CallRec is not signed with an Apple developer account. Files downloaded with `curl` are not marked as downloaded from the internet, so macOS opens the app without the "Open Anyway" step. (If you download `CallRec.zip` from the Releases page in a browser instead, macOS blocks it the first time: open System Settings > Privacy & Security and click **Open Anyway**. Then choose **Finish setup** in the menu bar icon.)
 - The same missing developer signature means that to macOS every update is a new app, so after an update it may ask for Microphone and System Audio Recording again.
-- Where the tools come from: uv is the official release from Astral. ffmpeg 9.0.2 (LGPL, only macOS frameworks) and whisper-cli 1.9.5 (Metal) are built from their official sources by [tools/build-tools.sh](tools/build-tools.sh), with one small ffmpeg fix in [tools/patches](tools/patches) so the microphone never drops audio; the exact sources, checksums and licenses are in `~/.callrec/licenses`. The models come from fixed revisions on Hugging Face.
+- Where the tools come from: uv is the official release from Astral. ffmpeg 9.0.2 (LGPL, only macOS frameworks) and whisper-cli 1.9.5 (Metal) are built from their official sources by [tools/build-tools.sh](tools/build-tools.sh), with one small ffmpeg fix in [tools/patches](tools/patches); callrec-mic, which records your mic through Apple's audio engine (with echo cancellation on speakers), is built from [tools/mic-helper](tools/mic-helper) by the same script; the exact sources, checksums and licenses are in `~/.callrec/licenses`. The models come from fixed revisions on Hugging Face.
 - To uninstall: if you turned on **Open at login**, turn it off in the menu first. Quit CallRec, delete it from Applications, then run this in Terminal to remove the `callrec` command, the tools and models, and the app settings:
 
   ```bash
@@ -106,7 +106,8 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 |---|---|---|
 | `CALLREC_DIR` | `~/CallRecordings` | where recordings go |
 | `CALLREC_LANG` | `auto` | force `he` or `en` |
-| `CALLREC_MIC` | `default` | mic name or index from `callrec doctor` |
+| `CALLREC_MIC` | `default` | mic name or index from `callrec doctor` (that device is recorded with ffmpeg, without echo cancellation) |
+| `CALLREC_ECHO_CANCEL` | `1` | `0` turns off echo cancellation on speakers (while it is on, macOS plays other sound a bit softer, as in a FaceTime call) |
 | `CALLREC_END_GRACE` | `60` (app: `300`) | seconds after the call app is gone before auto stop |
 | `CALLREC_SILENCE_STOP` | `900` | seconds with nothing heard on either side before auto stop |
 | `CALLREC_ME` / `CALLREC_THEM` | by language | speaker labels |
@@ -115,11 +116,11 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 
 - `app/build.sh`: builds `CallRec.app` and `build/CallRec.zip` (needs only the Xcode Command Line Tools).
 - `./release.sh`: builds the app, pins its sha256 in `install.sh`, lays the files out as a local release to test the installer against (`CALLREC_RELEASE_URL=file://...`), and prints the commands that publish it. It does not publish anything itself.
-- The tools (ffmpeg, ffprobe, whisper-cli) were built once and stay as they are; to rebuild them, raise `TOOLS_REVISION` in `setup.sh` and `tools/build-tools.sh`, set `TOOLS_TAG` in `setup.sh` to the new release, and run `./release.sh`.
+- The tools (ffmpeg, ffprobe, whisper-cli, callrec-mic) were built once and stay as they are; to rebuild them, raise `TOOLS_REVISION` in `setup.sh` and `tools/build-tools.sh`, set `TOOLS_TAG` in `setup.sh` to the new release, and run `./release.sh`.
 
 ## Good to know
 
-- On speakers (no headphones) your mic also hears the other side, so a few of their lines may be labeled as you. Headphones give the cleanest result.
+- On speakers (no headphones) your mic also hears the other side. Apple's echo cancellation removes most of it, but a few of their lines may still be labeled as you. Headphones give the cleanest result.
 - macOS shows its own recording indicator in the menu bar while callrec records. Only you see it.
 - Recording laws differ by country: see [Before you record](#before-you-record).
 

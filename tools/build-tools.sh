@@ -81,18 +81,21 @@ unpack() {  # unpack FILE DIR
 build_ffmpeg() {
   step "ffmpeg $FFMPEG_VERSION (LGPL, macOS frameworks only)"
   fetch "$FFMPEG_URL" "$FFMPEG_SHA256" "ffmpeg-$FFMPEG_VERSION.tar.xz"
-  local src="$WORK/ffmpeg-src" prefix="$WORK/ffmpeg-out"
+  local src="$WORK/ffmpeg-src" dest="$WORK/ffmpeg-out"
   unpack "ffmpeg-$FFMPEG_VERSION.tar.xz" "$src"
   local fix
   for fix in "$ROOT"/tools/patches/ffmpeg-*.patch; do
     patch -d "$src" -p1 --quiet --forward <"$fix" || die "Could not apply $(basename "$fix")"
     cp "$fix" "$STAGE/licenses/"
   done
-  rm -rf "$prefix"
-  (cd "$src" && ./configure --prefix="$prefix" "${FFMPEG_FLAGS[@]}" >"$WORK/ffmpeg-configure.log" 2>&1) \
+  rm -rf "$dest"
+  # ffmpeg keeps its configure line inside the binary: a fixed prefix (installed into DESTDIR) keeps the
+  # build folder, and with it the builder's home folder, out of it.
+  (cd "$src" && ./configure --prefix=/usr/local "${FFMPEG_FLAGS[@]}" >"$WORK/ffmpeg-configure.log" 2>&1) \
     || die "ffmpeg configure failed, see $WORK/ffmpeg-configure.log (and $src/ffbuild/config.log)"
-  make -C "$src" -j "$JOBS" install >"$WORK/ffmpeg-build.log" 2>&1 || die "ffmpeg build failed, see $WORK/ffmpeg-build.log"
-  cp "$prefix/bin/ffmpeg" "$prefix/bin/ffprobe" "$STAGE/bin/"
+  make -C "$src" -j "$JOBS" install DESTDIR="$dest" >"$WORK/ffmpeg-build.log" 2>&1 \
+    || die "ffmpeg build failed, see $WORK/ffmpeg-build.log"
+  cp "$dest/usr/local/bin/ffmpeg" "$dest/usr/local/bin/ffprobe" "$STAGE/bin/"
   cp "$src/COPYING.LGPLv2.1" "$STAGE/licenses/ffmpeg-LGPL-2.1.txt"
 }
 
@@ -102,7 +105,10 @@ build_whisper() {
   local src="$WORK/whisper-src" out="$WORK/whisper-build"
   unpack "whisper.cpp-$WHISPER_VERSION.tar.gz" "$src"
   rm -rf "$out"
-  cmake -S "$src" -B "$out" "${WHISPER_FLAGS[@]}" >"$WORK/whisper-configure.log" 2>&1 \
+  # Source file names end up in the binary (asserts): map the build folder to the project name.
+  local map="-ffile-prefix-map=$src=whisper.cpp"
+  cmake -S "$src" -B "$out" "${WHISPER_FLAGS[@]}" "-DCMAKE_C_FLAGS=$map" "-DCMAKE_CXX_FLAGS=$map" \
+    "-DCMAKE_OBJC_FLAGS=$map" >"$WORK/whisper-configure.log" 2>&1 \
     || die "whisper.cpp configure failed, see $WORK/whisper-configure.log"
   cmake --build "$out" --config Release -j "$JOBS" --target whisper-cli >"$WORK/whisper-build.log" 2>&1 \
     || die "whisper.cpp build failed, see $WORK/whisper-build.log"
@@ -127,6 +133,8 @@ check_binaries() {
     codesign --force --sign - "$bin" >/dev/null 2>&1 || die "Could not sign $bin"
     lib="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | grep -v -E '^(/usr/lib/|/System/Library/)' || true)"
     [ -z "$lib" ] || die "$(basename "$bin") links a library that is not part of macOS: $lib"
+    [ "$(strings -a "$bin" | grep -c -F "$HOME" || true)" = 0 ] \
+      || die "$(basename "$bin") contains a path in your home folder ($HOME)."
   done
   "$STAGE/bin/ffmpeg" -hide_banner -devices 2>/dev/null | grep -q avfoundation || die "ffmpeg has no AVFoundation input."
   "$STAGE/bin/ffmpeg" -hide_banner -encoders 2>/dev/null | grep -q ' aac ' || die "ffmpeg has no AAC encoder."
@@ -147,7 +155,7 @@ ffmpeg and ffprobe $FFMPEG_VERSION, LGPL 2.1 (licenses/ffmpeg-LGPL-2.1.txt)
 whisper-cli from whisper.cpp $WHISPER_VERSION, MIT (licenses/whisper.cpp-MIT.txt)
   source: $WHISPER_URL
   sha256: $WHISPER_SHA256
-  cmake: ${WHISPER_FLAGS[*]}
+  cmake: ${WHISPER_FLAGS[*]} (C, C++ and Objective-C flags: -ffile-prefix-map=<source folder>=whisper.cpp)
 
 callrec-mic, CallRec's microphone helper, MIT (licenses/callrec-MIT.txt)
   source: tools/mic-helper in the repository below

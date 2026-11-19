@@ -21,7 +21,7 @@ UV_SHA256="81b811b57e4624df7ed3aac148e0359100d9962f3d9dce00aec533dc2e086731"
 TOOLS_REVISION=2
 TOOLS_TAG="v1.3"
 TOOLS_NAME="callrec-tools-${TOOLS_REVISION}-macos-arm64"
-TOOLS_SHA256="f868dc1147f62e00b26334d10d1cba52a56805cb8e6b6c2be3ee4ca6618e4b00"
+TOOLS_SHA256="c34af1a8fa8d2c957a7601232093adc258d346790268c0ce18d1bbe7fd636677"
 TOOLS=(ffmpeg ffprobe whisper-cli callrec-mic)
 
 HF="https://huggingface.co"

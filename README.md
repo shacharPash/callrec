@@ -47,7 +47,7 @@ Good to know about the install:
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/shacharPash/callrec/main/install.sh)"
 ```
 
-אחרי ההתקנה האפליקציה יושבת בשורת התפריטים. מתחילים הקלטה מהאייקון או עם Ctrl+Option+R, או מדליקים "Start automatically when a call starts" ואז כל שיחה (זום, מיט, סלאק, טימס, וואטסאפ ועוד) מוקלטת לבד: ההקלטה מתחילה כשהשיחה מתחילה, נעצרת כשהיא נגמרת, והתמלול מוכן כעבור כמה שניות. עברית מתומללת עם ivrit.ai ואנגלית עם Whisper, והכל נשאר על המחשב. לעדכון מריצים שוב את אותה פקודה, ואחרי עדכון ייתכן שמקוס יבקש שוב הרשאה למיקרופון ולהקלטת שמע.
+אחרי ההתקנה האפליקציה יושבת בשורת התפריטים. מתחילים הקלטה מהאייקון או עם Ctrl+Option+R, או מדליקים "Start automatically when a call starts" ואז כל שיחה (זום, מיט, סלאק, טימס, וואטסאפ ועוד) מוקלטת לבד: ההקלטה מתחילה כשהשיחה מתחילה, נעצרת כשהיא נגמרת, והתמלול מוכן כעבור כמה שניות. הקלטה שהתחלתם בעצמכם נמשכת עד שתעצרו אותה. עברית מתומללת עם ivrit.ai ואנגלית עם Whisper, והכל נשאר על המחשב. לעדכון מריצים שוב את אותה פקודה, ואחרי עדכון ייתכן שמקוס יבקש שוב הרשאה למיקרופון ולהקלטת שמע.
 
 חשוב לדעת: בישראל מותר למשתתף בשיחה להקליט אותה, אבל במדינות אחרות ייתכן שצריך הסכמה של כל המשתתפים, ולמקום העבודה עשויים להיות כללים משלו. האחריות לעמוד בחוק ובכללים היא שלכם, ובמקרה של ספק כדאי לומר בתחילת השיחה שהיא מוקלטת.
 
@@ -59,7 +59,7 @@ CallRec lives in the menu bar only (no Dock icon). If you don't see its icon, th
 
 Muted yourself in the meeting to talk to someone in the room? Press **Ctrl+Option+M** (or Mute me in the recording in the menu): your mic is silent in the recording until you press it again, the other side keeps recording, and the icon shows a crossed-out mic. The meeting apps don't tell other apps when you mute, so this is a separate switch.
 
-While recording, the icon only turns filled, with no timer and no pop-ups, so it stays out of the way when you share your screen. That keeps your screen clean; it is not a way to record people without telling them (see [Before you record](#before-you-record)). A recording stops by itself 5 minutes after the call app is gone, or after 15 minutes with nothing heard on either side.
+While recording, the icon only turns filled, with no timer and no pop-ups, so it stays out of the way when you share your screen. That keeps your screen clean; it is not a way to record people without telling them (see [Before you record](#before-you-record)). A recording that started by itself with a call also stops by itself, 5 minutes after the call app is gone. One you started yourself goes on until you stop it, even after the call ends. Either way, a recording stops after 15 minutes with nothing heard on either side.
 
 ## Command line
 
@@ -77,7 +77,7 @@ The first time you record from the Terminal, macOS asks your terminal app for **
 
 ```bash
 callrec                 # auto mode: leave it running; every call is recorded and transcribed
-callrec daily           # record right now (stops on Enter, or when the meeting ends)
+callrec daily           # record right now (stops on Enter)
 callrec list            # what you recorded, with duration, language and a preview
 callrec import x.m4a    # add any audio/video file to your recordings and transcribe it
 callrec transcribe x.m4a  # transcribe a file, transcript saved next to it

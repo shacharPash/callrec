@@ -11,7 +11,7 @@ transcribe it locally. Hebrew uses the ivrit.ai model, English uses Whisper larg
 
 Usage:
   callrec                      auto mode: waits for a meeting, records it, transcribes it
-  callrec NAME                 record now (stops on Enter or when the meeting ends)
+  callrec NAME                 record now (stops on Enter)
   callrec list                 what you recorded
   callrec transcribe FILE...   transcribe any audio file (transcript next to it)
   callrec import FILE...       add an audio/video file to your recordings and transcribe it
@@ -648,9 +648,10 @@ def new_folder(label: str | None) -> Path:
     return folder
 
 
-def record_once(folder: Path, app: str | None, follow_meeting: bool) -> tuple[Recorder, str]:
-    """Record until Enter, Ctrl+C, terminal close, or (follow_meeting) the meeting ends.
-    Returns the recorder and why it stopped: enter, ctrl-c, hangup or ended."""
+def record_once(folder: Path, app: str | None, stop_when_call_ends: bool) -> tuple[Recorder, str]:
+    """Record until Enter, Ctrl+C, terminal close, or (stop_when_call_ends) the meeting ends.
+    A recording you started by hand passes False: it stops only when you stop it (or after SILENCE_STOP).
+    Returns the recorder and why it stopped: enter, ctrl-c, hangup, ended or silence."""
     rec = Recorder(folder)
     reason = "enter"
     try:
@@ -677,20 +678,19 @@ def record_once(folder: Path, app: str | None, follow_meeting: bool) -> tuple[Re
                 break
             rec.tick()
             health.check()
-            if follow_meeting:
-                # Only an app that used the mic counts as a call (a browser playing a video does not).
-                using_mic, active = call_apps()
-                if not seen_app and using_mic:
-                    seen_app = sorted(using_mic)[0]
-                    write_meta(folder, app=seen_app)
-                    emit(state="recording", app=seen_app, folder=str(folder), started=rec.started)
-                if seen_app and seen_app in active:
-                    last_active = time.time()
-                elif seen_app and time.time() - last_active > END_GRACE:
-                    status("")
-                    print(f"\n■ {seen_app} call ended")
-                    reason = "ended"
-                    break
+            # Only an app that used the mic counts as a call (a browser playing a video does not).
+            using_mic, active = call_apps()
+            if not seen_app and using_mic:
+                seen_app = sorted(using_mic)[0]
+                write_meta(folder, app=seen_app)
+                emit(state="recording", app=seen_app, folder=str(folder), started=rec.started)
+            if seen_app and seen_app in active:
+                last_active = time.time()
+            elif stop_when_call_ends and seen_app and time.time() - last_active > END_GRACE:
+                status("")
+                print(f"\n■ {seen_app} call ended")
+                reason = "ended"
+                break
             if time.time() - health.last_sound > SILENCE_STOP:
                 status("")
                 print(f"\n■ Nothing heard for {SILENCE_STOP // 60} minutes")
@@ -826,7 +826,7 @@ def record_now(name: str | None, transcribe_after: bool, keep_tracks: bool, open
     signal.signal(signal.SIGHUP, _on_hangup)
     signal.signal(signal.SIGTERM, _on_hangup)
     app = meeting_app()
-    rec, reason = record_once(new_folder(name or app), app, follow_meeting=True)
+    rec, reason = record_once(new_folder(name or app), app, stop_when_call_ends=False)
     hung_up = reason == "hangup"
     mode = "none" if not transcribe_after else ("background" if hung_up else "inline")
     finish(rec, mode, keep_tracks)
@@ -852,13 +852,13 @@ def auto(transcribe_after: bool, keep_tracks: bool) -> None:
     paused = False  # stopped by hand: don't restart until that meeting ends
     try:
         while True:
-            state, app, since = None, None, None
+            state, app, since, by_hand = None, None, None, False
             while True:
                 if app_gone():
                     raise Hangup()
                 if Control.start:
                     Control.start = False
-                    app = meeting_app()
+                    app, by_hand = meeting_app(), True
                     break
                 auto_on = not AUTO_OFF.exists()
                 if paused and not meeting_app(include_output=True):
@@ -877,7 +877,7 @@ def auto(transcribe_after: bool, keep_tracks: bool) -> None:
                 time.sleep(1)
             status("")
             print()
-            rec, reason = record_once(new_folder(app), app, follow_meeting=True)
+            rec, reason = record_once(new_folder(app), app, stop_when_call_ends=not by_hand)
             finish(rec, "background" if transcribe_after else "none", keep_tracks)
             if reason in ("hangup", "ctrl-c"):
                 print("callrec is off.")

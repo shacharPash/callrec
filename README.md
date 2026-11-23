@@ -59,7 +59,7 @@ CallRec lives in the menu bar only (no Dock icon). If you don't see its icon, th
 
 Muted yourself in the meeting to talk to someone in the room? Press **Ctrl+Option+M** (or Mute me in the recording in the menu): your mic is silent in the recording until you press it again, the other side keeps recording, and the icon shows a crossed-out mic. The meeting apps don't tell other apps when you mute, so this is a separate switch.
 
-While recording, the icon only turns filled, with no timer and no pop-ups, so it stays out of the way when you share your screen. That keeps your screen clean; it is not a way to record people without telling them (see [Before you record](#before-you-record)). A recording that started by itself with a call also stops by itself, 5 minutes after the call app is gone. One you started yourself goes on until you stop it, even after the call ends. Either way, a recording stops after 15 minutes with nothing heard on either side.
+While recording, the icon only turns filled, with no timer and no pop-ups, so it stays out of the way when you share your screen. That keeps your screen clean; it is not a way to record people without telling them (see [Before you record](#before-you-record)). A recording that started by itself with a call also stops by itself, a few seconds after the call ends (when the call app stops using the mic and the speakers; noise in the room does not keep it going). One you started yourself goes on until you stop it, even after the call ends. Either way, a recording stops after 15 minutes with nothing heard on either side.
 
 ## Command line
 
@@ -95,9 +95,9 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 
 ## How it works
 
-- Your mic: `ffmpeg` (AVFoundation), always the current default mic. If the mic disappears mid-call (AirPods disconnected), it restarts on the new default and the pieces are stitched back in time.
+- Your mic: `callrec-mic`, Apple's audio engine with echo cancellation on speakers, always the current default mic (`ffmpeg` takes over if it cannot start, and records a mic you pick with `CALLREC_MIC`). If the mic disappears mid-call (AirPods disconnected), it restarts on the new default and the pieces are stitched back in time.
 - The other side: a private Core Audio process tap via [catap](https://pypi.org/project/catap/). It captures what the Mac plays on any output device, does not change your audio settings, and other apps cannot see it.
-- Meeting detection: callrec polls which apps are using the microphone. A known call app (or a browser) using the mic starts a recording; 60 seconds (5 minutes in the app) with the app no longer using the mic or playing audio ends it.
+- Meeting detection: callrec polls which apps are using the microphone. A known call app (or a browser) using the mic starts a recording. WhatsApp also uses the mic to record a voice message, so it counts only while it plays audio at the same time, as in a call. 5 seconds with the app no longer using the mic or playing audio ends it.
 - Transcription: `whisper.cpp` with Silero VAD (skips silence, so Whisper doesn't invent text), stereo diarization for "me / them", and the right model for each language. Long calls are checked every 30 seconds, so a stretch of English inside a Hebrew call goes to the English model.
 
 ## Settings (optional, env vars)
@@ -108,7 +108,7 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 | `CALLREC_LANG` | `auto` | force `he` or `en` |
 | `CALLREC_MIC` | `default` | mic name or index from `callrec doctor` (that device is recorded with ffmpeg, without echo cancellation) |
 | `CALLREC_ECHO_CANCEL` | `1` | `0` turns off echo cancellation on speakers (while it is on, macOS plays other sound a bit softer, as in a FaceTime call) |
-| `CALLREC_END_GRACE` | `60` (app: `300`) | seconds after the call app is gone before auto stop |
+| `CALLREC_END_GRACE` | `5` | seconds after the call app is gone before auto stop |
 | `CALLREC_SILENCE_STOP` | `900` | seconds with nothing heard on either side before auto stop |
 | `CALLREC_ME` / `CALLREC_THEM` | by language | speaker labels |
 

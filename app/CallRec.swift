@@ -238,7 +238,6 @@ final class Engine: ObservableObject {
         var e = ProcessInfo.processInfo.environment
         e["PATH"] = searchPath
         e["CALLREC_EVENTS"] = "1"
-        e["CALLREC_END_GRACE"] = "300"  // safety net: stop 5 minutes after the call app is gone
         e["PYTHONUNBUFFERED"] = "1"
         e["CALLREC_APP_PID"] = String(ProcessInfo.processInfo.processIdentifier)
         return e

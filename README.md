@@ -5,7 +5,7 @@
 Record every call on your Mac and get a transcript, automatically. Free, fully local, no bot joins the meeting.
 
 - Works with Zoom, Google Meet, Slack huddles, Teams, FaceTime, WhatsApp, Discord, Webex, and any browser call.
-- Works with headphones, AirPods or speakers, and keeps recording if you plug in or unplug them mid-call. On speakers, Apple's echo cancellation keeps the other side out of your mic.
+- Works with headphones, AirPods or speakers, and keeps recording if you plug in or unplug them mid-call.
 - Hebrew is transcribed with the [ivrit.ai](https://huggingface.co/ivrit-ai) model, English with Whisper large-v3-turbo. The language is detected automatically, also when a call switches between Hebrew and English.
 - Speakers: "you" (your mic) and "the other side" (what your Mac plays). Click a name in the transcript to rename it.
 - Nothing leaves your computer.
@@ -32,7 +32,7 @@ Good to know about the install:
 
 - CallRec is not signed with an Apple developer account. Files downloaded with `curl` are not marked as downloaded from the internet, so macOS opens the app without the "Open Anyway" step. (If you download `CallRec.zip` from the Releases page in a browser instead, macOS blocks it the first time: open System Settings > Privacy & Security and click **Open Anyway**. Then choose **Finish setup** in the menu bar icon.)
 - The same missing developer signature means that to macOS every update is a new app, so after an update it may ask for Microphone and System Audio Recording again.
-- Where the tools come from: uv is the official release from Astral. ffmpeg 9.0.2 (LGPL, only macOS frameworks) and whisper-cli 1.9.5 (Metal) are built from their official sources by [tools/build-tools.sh](tools/build-tools.sh), with one small ffmpeg fix in [tools/patches](tools/patches); callrec-mic, which records your mic through Apple's audio engine (with echo cancellation on speakers), is built from [tools/mic-helper](tools/mic-helper) by the same script; the exact sources, checksums and licenses are in `~/.callrec/licenses`. The models come from fixed revisions on Hugging Face.
+- Where the tools come from: uv is the official release from Astral. ffmpeg 9.0.2 (LGPL, only macOS frameworks) and whisper-cli 1.9.5 (Metal) are built from their official sources by [tools/build-tools.sh](tools/build-tools.sh), with one small ffmpeg fix in [tools/patches](tools/patches); callrec-mic, which records your mic through Apple's audio engine, is built from [tools/mic-helper](tools/mic-helper) by the same script; the exact sources, checksums and licenses are in `~/.callrec/licenses`. The models come from fixed revisions on Hugging Face.
 - To uninstall: if you turned on **Open at login**, turn it off in the menu first. Quit CallRec, delete it from Applications, then run this in Terminal to remove the `callrec` command, the tools and models, and the app settings:
 
   ```bash
@@ -97,7 +97,7 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 
 ## How it works
 
-- Your mic: `callrec-mic`, Apple's audio engine with echo cancellation on speakers, always the current default mic (`ffmpeg` takes over if it cannot start, and records a mic you pick with `CALLREC_MIC`). If the mic disappears mid-call (AirPods disconnected), it restarts on the new default and the pieces are stitched back in time.
+- Your mic: `callrec-mic`, through Apple's audio engine, always the current default mic (`ffmpeg` takes over if it cannot start, and records a mic you pick with `CALLREC_MIC`). If the mic disappears mid-call (AirPods disconnected), it restarts on the new default and the pieces are stitched back in time.
 - The other side: a private Core Audio process tap via [catap](https://pypi.org/project/catap/). It captures what the Mac plays on any output device, does not change your audio settings, and other apps cannot see it.
 - Meeting detection: callrec polls which apps are using the microphone. A known call app (or a browser) using the mic starts a recording. WhatsApp also uses the mic to record a voice message, so it counts only while it plays audio at the same time, as in a call. 5 seconds with the app no longer using the mic or playing audio ends it.
 - Transcription: `whisper.cpp` with Silero VAD (skips silence, so Whisper doesn't invent text), stereo diarization for "me / them", and the right model for each language. Long calls are checked every 30 seconds, so a stretch of English inside a Hebrew call goes to the English model.
@@ -108,8 +108,8 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 |---|---|---|
 | `CALLREC_DIR` | `~/CallRecordings` | where recordings go |
 | `CALLREC_LANG` | `auto` | force `he` or `en` |
-| `CALLREC_MIC` | `default` | mic name or index from `callrec doctor` (that device is recorded with ffmpeg, without echo cancellation) |
-| `CALLREC_ECHO_CANCEL` | `1` | `0` turns off echo cancellation on speakers (while it is on, macOS plays other sound a bit softer, as in a FaceTime call) |
+| `CALLREC_MIC` | `default` | mic name or index from `callrec doctor` (that device is recorded with ffmpeg) |
+| `CALLREC_ECHO_CANCEL` | `0` | `1` turns on Apple's echo cancellation on speakers. Leave it off for calls: while it runs, the call app gets your mic almost silent and the other side hears you badly |
 | `CALLREC_END_GRACE` | `5` | seconds after the call app is gone before auto stop |
 | `CALLREC_SILENCE_STOP` | `900` | seconds with nothing heard on either side before auto stop |
 | `CALLREC_ME` / `CALLREC_THEM` | by language | speaker labels |
@@ -122,7 +122,7 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 
 ## Good to know
 
-- On speakers (no headphones) your mic also hears the other side. Apple's echo cancellation removes most of it, but a few of their lines may still be labeled as you. Headphones give the cleanest result.
+- On speakers (no headphones) your mic also hears the other side, so some of their lines may be labeled as you. Headphones give the cleanest result. CallRec does not use Apple's echo cancellation during calls, because it leaves the call app with an almost silent mic.
 - macOS shows its own recording indicator in the menu bar while callrec records. Only you see it.
 - Recording laws differ by country: see [Before you record](#before-you-record).
 

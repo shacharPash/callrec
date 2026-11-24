@@ -58,9 +58,9 @@ SPK_SEG = MODELS / "speaker-segmentation.onnx"
 SPK_EMB = MODELS / "speaker-embedding.onnx"
 SPK_THRESHOLD = float(os.environ.get("CALLREC_SPEAKER_THRESHOLD", "0.6"))  # lower = more speakers
 MIC = os.environ.get("CALLREC_MIC", "default")  # avfoundation audio device name or index (uses ffmpeg)
-MIC_HELPER = "callrec-mic"  # Apple's audio engine, echo cancelled on speakers (tools/mic-helper)
-# Echo cancellation is on only while the sound goes to speakers; like FaceTime, it makes macOS play other sound a bit softer.
-ECHO_CANCEL = os.environ.get("CALLREC_ECHO_CANCEL", "1") != "0"
+MIC_HELPER = "callrec-mic"  # Apple's audio engine (tools/mic-helper)
+# Off by default: while Apple's echo cancellation runs, every other app (the call itself) gets the mic almost silent.
+ECHO_CANCEL = os.environ.get("CALLREC_ECHO_CANCEL", "0") == "1"
 MIC_RATE = 16000
 MIC_GAP = 0.25  # seconds the mic may fall behind the clock before the gap is filled with silence
 # ffmpeg (the fallback) places mic audio by its capture timestamps, so a missed buffer becomes silence.
@@ -462,8 +462,8 @@ class MicFile:
 
 class Mic:
     """Records your microphone into a MicFile. Uses callrec-mic, which gets every buffer from Apple's audio
-    engine (ffmpeg's AVFoundation input drops some) and, when the sound goes to the speakers, cancels the
-    other side's voice that the mic picks up. Falls back to ffmpeg when the helper is missing or keeps failing,
+    engine (ffmpeg's AVFoundation input drops some), with echo cancellation on speakers only if
+    CALLREC_ECHO_CANCEL=1. Falls back to ffmpeg when the helper is missing or keeps failing,
     or when CALLREC_MIC names a device. Restarts the capture when it stops or stalls."""
 
     def __init__(self, folder: Path, started: float):
@@ -1526,7 +1526,7 @@ def doctor() -> None:
         print(f"{'✔' if found else '✖'} {tool}")
         ok &= bool(found)
     helper = shutil.which(MIC_HELPER)
-    print(f"{'✔' if helper else '!'} {MIC_HELPER} (echo-cancelled mic){'' if helper else ': missing, the mic uses ffmpeg'}")
+    print(f"{'✔' if helper else '!'} {MIC_HELPER} (mic through Apple's audio engine){'' if helper else ': missing, the mic uses ffmpeg'}")
     w = next((n for n in ("whisper-cli", "whisper-cpp") if shutil.which(n)), None)
     print(f"{'✔' if w else '✖'} whisper.cpp ({w or 'missing'})")
     ok &= bool(w)

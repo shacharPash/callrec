@@ -1,5 +1,7 @@
 # callrec
 
+![callrec: records your calls on your Mac and gives you a transcript, fully local](assets/banner.png)
+
 Record every call on your Mac and get a transcript, automatically. Free, fully local, no bot joins the meeting.
 
 - Works with Zoom, Google Meet, Slack huddles, Teams, FaceTime, WhatsApp, Discord, Webex, and any browser call.

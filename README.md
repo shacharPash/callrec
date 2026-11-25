@@ -5,7 +5,7 @@
 Record every call on your Mac and get a transcript, automatically. Free, fully local, no bot joins the meeting.
 
 - Works with Zoom, Google Meet, Slack huddles, Teams, FaceTime, WhatsApp, Discord, Webex, and any browser call.
-- Works with headphones, AirPods or speakers, and keeps recording if you plug in or unplug them mid-call.
+- Works with headphones, AirPods or speakers, and keeps recording if you plug in or unplug them mid-call. On speakers, the other side's voice that your mic picks up is removed from your side after the call.
 - Hebrew is transcribed with the [ivrit.ai](https://huggingface.co/ivrit-ai) model, English with Whisper large-v3-turbo. The language is detected automatically, also when a call switches between Hebrew and English.
 - Speakers: "you" (your mic) and "the other side" (what your Mac plays). Click a name in the transcript to rename it.
 - Nothing leaves your computer.
@@ -109,6 +109,7 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 | `CALLREC_DIR` | `~/CallRecordings` | where recordings go |
 | `CALLREC_LANG` | `auto` | force `he` or `en` |
 | `CALLREC_MIC` | `default` | mic name or index from `callrec doctor` (that device is recorded with ffmpeg) |
+| `CALLREC_AEC` | `1` | `0` keeps your side as recorded, without removing the other side's voice that came back from the speakers |
 | `CALLREC_ECHO_CANCEL` | `0` | `1` turns on Apple's echo cancellation on speakers. Leave it off for calls: while it runs, the call app gets your mic almost silent and the other side hears you badly |
 | `CALLREC_END_GRACE` | `5` | seconds after the call app is gone before auto stop |
 | `CALLREC_SILENCE_STOP` | `900` | seconds with nothing heard on either side before auto stop |
@@ -122,7 +123,7 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 
 ## Good to know
 
-- On speakers (no headphones) your mic also hears the other side, so some of their lines may be labeled as you. Headphones give the cleanest result. CallRec does not use Apple's echo cancellation during calls, because it leaves the call app with an almost silent mic.
+- On speakers (no headphones) your mic also hears the other side. When the call ends, CallRec removes that from your side with WebRTC's echo canceller, which works on its own copy of your mic only, so the call app is not affected. Your voice stays as it was, a little quieter only where you talked over the other side. CallRec does not use Apple's echo cancellation during calls, because it leaves the call app with an almost silent mic.
 - macOS shows its own recording indicator in the menu bar while callrec records. Only you see it.
 - Recording laws differ by country: see [Before you record](#before-you-record).
 

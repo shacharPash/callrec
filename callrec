@@ -1,7 +1,7 @@
 #!/usr/bin/env -S UV_MANAGED_PYTHON=1 uv run --quiet --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["catap==0.6.1"]
+# dependencies = ["catap==0.6.1", "livekit==1.2.1"]
 #
 # [tool.uv]
 # exclude-newer = "2026-11-12T00:00:00Z"
@@ -37,6 +37,7 @@ import sys
 import termios
 import threading
 import time
+import wave
 from pathlib import Path
 
 HOME = Path.home()
@@ -62,6 +63,9 @@ MIC_HELPER = "callrec-mic"  # Apple's audio engine (tools/mic-helper)
 # Off by default: while Apple's echo cancellation runs, every other app (the call itself) gets the mic almost silent.
 ECHO_CANCEL = os.environ.get("CALLREC_ECHO_CANCEL", "0") == "1"
 MIC_RATE = 16000
+# Our own echo cancellation, after the recording, on our copy of your side only: the call app's mic is untouched.
+AEC = os.environ.get("CALLREC_AEC", "1") != "0"
+AEC_FRAME = MIC_RATE // 100  # WebRTC's echo canceller takes 10 ms at a time
 MIC_GAP = 0.25  # seconds the mic may fall behind the clock before the gap is filled with silence
 # ffmpeg (the fallback) places mic audio by its capture timestamps, so a missed buffer becomes silence.
 MIC_FILTER = "aresample=async=1:min_hard_comp=0.01:first_pts=0"
@@ -801,6 +805,55 @@ def mute_filter(ranges: list[tuple[float, float]]) -> str:
     return f"volume=0:enable='{cond}',"
 
 
+def remove_echo(mic: Path, other: Path, out: Path) -> bool:
+    """Writes your side without the other side that came back into your mic from the speakers. WebRTC's echo
+    canceller (AEC3, through livekit) learns from the other side's track how the speakers sound on your mic and
+    subtracts it; your own voice stays. Both tracks start at the same moment, so they line up sample by sample.
+    False, with nothing written, when it cannot run: your side is then used as it was recorded."""
+    try:
+        from livekit import rtc
+
+        apm = rtc.AudioProcessingModule(echo_cancellation=True)
+    except Exception as e:
+        print(f"⚠ echo removal is not available ({type(e).__name__}: {e}); your side is kept as recorded",
+              file=sys.stderr)
+        return False
+    frame, block = AEC_FRAME * 2, MIC_RATE * 2
+    procs = [subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", str(p), "-ac", "1",
+                               "-ar", str(MIC_RATE), "-f", "s16le", "pipe:1"],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE) for p in (mic, other)]
+    mine, theirs = (p.stdout for p in procs)
+    part = out.with_name(out.stem + ".part.wav")
+    try:
+        with wave.open(str(part), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(MIC_RATE)
+            while pcm := mine.read(block):
+                size = len(pcm)
+                pcm = pcm.ljust(-(-size // frame) * frame, b"\0")
+                far = theirs.read(len(pcm)).ljust(len(pcm), b"\0")
+                clean = bytearray()
+                for i in range(0, len(pcm), frame):
+                    apm.process_reverse_stream(rtc.AudioFrame(bytearray(far[i:i + frame]), MIC_RATE, 1, AEC_FRAME))
+                    f = rtc.AudioFrame(bytearray(pcm[i:i + frame]), MIC_RATE, 1, AEC_FRAME)
+                    apm.set_stream_delay_ms(0)
+                    apm.process_stream(f)
+                    clean += bytes(f.data)
+                w.writeframes(bytes(clean[:size]))
+        if procs[0].wait() != 0 or procs[1].poll() not in (None, 0):
+            raise RuntimeError(f"ffmpeg could not read {mic.name if procs[0].returncode else other.name}")
+        part.replace(out)
+        return True
+    except Exception as e:
+        print(f"⚠ echo removal failed ({type(e).__name__}: {e}); your side is kept as recorded", file=sys.stderr)
+        part.unlink(missing_ok=True)
+        return False
+    finally:
+        for p in procs:
+            end_process(p)
+
+
 def build_call(folder: Path, keep_tracks: bool = False) -> Path | None:
     """mic segments + system.wav → call.wav (left = you, right = the other side)."""
     mic_path, sys_path, call = folder / "mic.wav", folder / "system.wav", folder / "call.wav"
@@ -832,10 +885,14 @@ def build_call(folder: Path, keep_tracks: bool = False) -> Path | None:
         ff("-i", str(mic_path if mic_ok else sys_path), *extra, "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(call))
     else:
         end = max(probe(mic_path)[0], probe(sys_path)[0])
+        clean = folder / "mic.clean.wav"
+        echo_removed = AEC and remove_echo(mic_path, sys_path, clean)
+        write_meta(folder, echo_removed=echo_removed)
         chain = f"aresample=16000,pan=mono|c0=c0,apad,atrim=end={end:.3f}"
         graph = f"[0:a]{silence_me}{chain}[l];[1:a]{chain}[r];[l][r]join=inputs=2:channel_layout=stereo[a]"
-        ff("-i", str(mic_path), "-i", str(sys_path), "-filter_complex", graph, "-map", "[a]",
-           "-c:a", "pcm_s16le", str(call))
+        ff("-i", str(clean if echo_removed else mic_path), "-i", str(sys_path), "-filter_complex", graph,
+           "-map", "[a]", "-c:a", "pcm_s16le", str(call))
+        clean.unlink(missing_ok=True)
     if not keep_tracks:
         mic_path.unlink(missing_ok=True)
         sys_path.unlink(missing_ok=True)
@@ -1541,6 +1598,13 @@ def doctor() -> None:
     except Exception as e:  # pragma: no cover
         print(f"✖ catap ({e})")
         ok = False
+    try:
+        from livekit import rtc
+
+        rtc.AudioProcessingModule(echo_cancellation=True)
+        print(f"✔ echo removal (WebRTC through livekit){'' if AEC else ', turned off by CALLREC_AEC=0'}")
+    except Exception as e:  # pragma: no cover
+        print(f"! echo removal ({type(e).__name__}: {e}): on speakers your side keeps the other side's voice")
     print("\nMic devices (callrec uses the system default; set CALLREC_MIC to override):", flush=True)
     listing = subprocess.run(["ffmpeg", "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
                              capture_output=True, text=True).stderr

@@ -255,6 +255,26 @@ def audio_devices() -> tuple[str | None, str | None]:
         return None, None
 
 
+def headphones_now() -> bool | None:
+    """Whether the sound goes to headphones now, by callrec-mic's rule: Bluetooth (far more often headphones than a
+    speaker) and the built-in headphone jack count; USB, HDMI, AirPlay and anything unknown may be speakers. None
+    when Core Audio cannot tell."""
+    try:
+        from catap.bindings._coreaudio import (get_property_bytes, kAudioObjectPropertyScopeOutput,
+                                               kAudioObjectSystemObject)
+
+        def number(obj: int, key: bytes, **scope) -> int:
+            return int.from_bytes(get_property_bytes(obj, int.from_bytes(key, "big"), **scope)[:4], "little")
+
+        device = number(kAudioObjectSystemObject, b"dOut")
+        transport = number(device, b"tran").to_bytes(4, "big")
+        if transport == b"bltn":
+            return number(device, b"ssrc", scope=kAudioObjectPropertyScopeOutput).to_bytes(4, "big") == b"hdpn"
+        return transport in (b"blue", b"blea")
+    except Exception:
+        return None
+
+
 def meeting_app(include_output: bool = False) -> str | None:
     """Name of a meeting app that is using the mic right now (or playing audio, if include_output)."""
     from catap import list_audio_processes
@@ -584,12 +604,14 @@ class Recorder:
         self.session = None
         self.started = 0.0
         self.sys_error: str | None = None
+        self.outputs: set[bool | None] = set()  # headphones_now() every second of the call
 
     def start(self) -> None:
         from catap import record_system_audio
 
         self.folder.mkdir(parents=True, exist_ok=True)
         mic_name, out_name = audio_devices()
+        self.outputs.add(headphones_now())
         # If the other side can't be captured (permission, device error), keep recording the mic
         # and say so right away, instead of losing the whole recording.
         try:
@@ -609,6 +631,7 @@ class Recorder:
     def tick(self) -> None:
         if self.mic:
             self.mic.check()
+        self.outputs.add(headphones_now())
 
     def stop(self) -> None:
         try:
@@ -621,7 +644,7 @@ class Recorder:
                 self.mic.stop()
                 write_meta(self.folder, mic_capture=self.mic.kinds)
         write_meta(self.folder, ended=dt.datetime.now().isoformat(timespec="seconds"),
-                   duration=round(time.time() - self.started, 1))
+                   duration=round(time.time() - self.started, 1), headphones=self.outputs == {True})
 
     @property
     def silent_system(self) -> bool:
@@ -887,7 +910,10 @@ def build_call(folder: Path, keep_tracks: bool = False) -> Path | None:
     else:
         end = max(probe(mic_path)[0], probe(sys_path)[0])
         clean = folder / "mic.clean.wav"
-        echo_removed = AEC and remove_echo(mic_path, sys_path, clean)
+        # On headphones the whole call, the mic never heard the other side, and echo removal would only make your
+        # voice quieter where you talked over them.
+        headphones = read_meta(folder).get("headphones") is True
+        echo_removed = AEC and not headphones and remove_echo(mic_path, sys_path, clean)
         write_meta(folder, echo_removed=echo_removed)
         chain = f"aresample=16000,pan=mono|c0=c0,apad,atrim=end={end:.3f}"
         graph = f"[0:a]{silence_me}{chain}[l];[1:a]{chain}[r];[l][r]join=inputs=2:channel_layout=stereo[a]"
@@ -1485,7 +1511,8 @@ def transcribe(src: Path, folder: Path | None = None, notify_done: bool = False)
     base = folder / f"{src.stem}.transcript"
     turns: list[tuple[float, float, int]] = []
     levels = None
-    sides = stereo and src.stem == "call" and read_meta(folder).get("echo_removed") is True
+    recorded = read_meta(folder)
+    sides = stereo and src.stem == "call" and (recorded.get("echo_removed") is True or recorded.get("headphones") is True)
     try:
         ff("-i", str(src), "-ac", "2" if stereo else "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav))
         if sides:

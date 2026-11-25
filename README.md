@@ -100,7 +100,7 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 - Your mic: `callrec-mic`, through Apple's audio engine, always the current default mic (`ffmpeg` takes over if it cannot start, and records a mic you pick with `CALLREC_MIC`). If the mic disappears mid-call (AirPods disconnected), it restarts on the new default and the pieces are stitched back in time.
 - The other side: a private Core Audio process tap via [catap](https://pypi.org/project/catap/). It captures what the Mac plays on any output device, does not change your audio settings, and other apps cannot see it.
 - Meeting detection: callrec polls which apps are using the microphone. A known call app (or a browser) using the mic starts a recording. WhatsApp also uses the mic to record a voice message, so it counts only while it plays audio at the same time, as in a call. 5 seconds with the app no longer using the mic or playing audio ends it.
-- Transcription: `whisper.cpp` with Silero VAD (skips silence, so Whisper doesn't invent text) and the right model for each language. Your side and the other side are transcribed apart, each in its own language, so every line keeps its side and nothing is lost when you talk at the same time. When echo removal did not run (turned off, or it failed), the call is transcribed as one stereo track instead, each line going to the louder side. Long calls are checked every 30 seconds, so a stretch of English inside a Hebrew call goes to the English model.
+- Transcription: `whisper.cpp` with Silero VAD (skips silence, so Whisper doesn't invent text) and the right model for each language. Your side and the other side are transcribed apart, each in its own language, so every line keeps its side and nothing is lost when you talk at the same time. When your side may still hold the other side's voice (on speakers with echo removal turned off, or failed), the call is transcribed as one stereo track instead, each line going to the louder side. Long calls are checked every 30 seconds, so a stretch of English inside a Hebrew call goes to the English model.
 
 ## Settings (optional, env vars)
 
@@ -123,7 +123,7 @@ Each call goes to `~/CallRecordings/<date>_<time>_<app>/`:
 
 ## Good to know
 
-- On speakers (no headphones) your mic also hears the other side. When the call ends, CallRec removes that from your side with WebRTC's echo canceller, which works on its own copy of your mic only, so the call app is not affected. Your voice stays as it was, a little quieter only where you talked over the other side. CallRec does not use Apple's echo cancellation during calls, because it leaves the call app with an almost silent mic.
+- On speakers (no headphones) your mic also hears the other side. When the call ends, CallRec removes that from your side with WebRTC's echo canceller, which works on its own copy of your mic only, so the call app is not affected. Your voice stays as it was, a little quieter only where you talked over the other side. On headphones (Bluetooth or the headphone jack) for the whole call, the mic does not hear the other side, so this step is skipped and your voice is kept exactly as recorded. CallRec does not use Apple's echo cancellation during calls, because it leaves the call app with an almost silent mic.
 - macOS shows its own recording indicator in the menu bar while callrec records. Only you see it.
 - Recording laws differ by country: see [Before you record](#before-you-record).
 

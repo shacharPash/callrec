@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import array
 import datetime as dt
+import difflib
 import fcntl
 import json
 import os
@@ -1296,7 +1297,9 @@ def language_runs(wav: Path, duration: float) -> list[tuple[float, float, str]]:
     if LANG != "auto":
         return [(0.0, duration, LANG)]
     if duration < 90:
-        lang, _ = detect_clip(wav, min(60.0, duration * 0.1))
+        starts = [min(60.0, duration * 0.1), *range(0, int(duration) - 5, 10)]
+        start = next((st for st in starts if loud_enough(wav, st, min(30.0, duration - st))), starts[0])
+        lang, _ = detect_clip(wav, start)
         return [(0.0, duration, lang if lang in ("he", "en") else "he")]
     # Check every 30s (every minute on calls over 20 min). A switch needs 2 checks in a row.
     step = 30.0 if duration <= 1200 else 60.0
@@ -1334,12 +1337,20 @@ def language_runs(wav: Path, duration: float) -> list[tuple[float, float, str]]:
 SRT_TIME = re.compile(r"(\d\d):(\d\d):(\d\d),(\d\d\d)")
 
 
+def srt_time(t: float) -> str:
+    ms = int(round(t * 1000))
+    return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+
+
+def span_seconds(span: re.Match) -> tuple[float, float]:
+    g = [int(x) for x in span.groups()]
+    return g[0] * 3600 + g[1] * 60 + g[2] + g[3] / 1000, g[4] * 3600 + g[5] * 60 + g[6] + g[7] / 1000
+
+
 def shift_srt(srt: str, offset: float) -> list[str]:
     """SRT blocks with their timestamps moved by offset seconds (index lines dropped)."""
     def move(m: re.Match) -> str:
-        t = int(m[1]) * 3600 + int(m[2]) * 60 + int(m[3]) + int(m[4]) / 1000 + offset
-        ms = int(round(t * 1000))
-        return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+        return srt_time(int(m[1]) * 3600 + int(m[2]) * 60 + int(m[3]) + int(m[4]) / 1000 + offset)
     blocks = []
     for block in re.split(r"\n\s*\n", srt.strip()):
         lines = [l for l in block.splitlines() if l.strip()]
@@ -1349,19 +1360,94 @@ def shift_srt(srt: str, offset: float) -> list[str]:
     return blocks
 
 
-def whisper(wav: Path, lang: str, base: Path, stereo: bool) -> Path:
+def whisper(wav: Path, lang: str, base: Path, stereo: bool, short: bool = False) -> Path:
     model = model_for(lang)
     if not model.exists():
         die(f"Model not found at {model}. Run the CallRec installer (see README) or setup.sh.")
     cmd = [whisper_bin(), "-m", str(model), "-l", lang, "-f", str(wav), "-osrt", "-of", str(base), "-np", "-pp"]
     if stereo:
         cmd.append("-di")  # stereo diarization: left = you, right = the other side
-        # Short lines (split at word boundaries), so each one can be given to the right speaker.
+    if stereo or short:
+        # Short lines (split at word boundaries), so each one goes to the right speaker, in the right place.
         cmd += ["-ml", "60", "-sow"]
     if VAD_MODEL.exists():
         cmd += ["--vad", "-vm", str(VAD_MODEL)]
     run(cmd, stdout=subprocess.DEVNULL)
     return Path(f"{base}.srt")
+
+
+def srt_lines(srt: str) -> list[tuple[float, float, str]]:
+    """(start, end, text) of each SRT block."""
+    lines = []
+    for block in re.split(r"\n\s*\n", srt.strip()):
+        rows = [l for l in block.splitlines() if l.strip()]
+        ts = next((i for i, l in enumerate(rows) if "-->" in l), None)
+        span = SPAN_RE.search(rows[ts]) if ts is not None else None
+        text = " ".join(rows[ts + 1:]).strip() if span else ""
+        if text:
+            lines.append((*span_seconds(span), text))
+    return lines
+
+
+ECHO_WINDOW = 2.0  # seconds around a line of yours to look for the same words from the other side
+ECHO_MATCH = 0.8  # share of its words that must be theirs, in order
+
+
+def is_echo(line: tuple[float, float, str], theirs: list[tuple[float, float, str]]) -> bool:
+    """A line on your side that is the other side's words, heard back from the speakers where echo removal
+    missed them. Lines under 3 words are kept: a short "yes" of yours often matches theirs."""
+    start, end, text = line
+    mine = re.findall(r"\w+", text.lower())
+    if len(mine) < 3:
+        return False
+    near = [w for s, e, t in theirs if s < end + ECHO_WINDOW and e > start - ECHO_WINDOW
+            for w in re.findall(r"\w+", t.lower())]
+    same = sum(b.size for b in difflib.SequenceMatcher(None, mine, near, autojunk=False).get_matching_blocks())
+    return same >= ECHO_MATCH * len(mine)
+
+
+def read_srt(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace").replace("\ufffd", "")
+
+
+def transcribe_track(wav: Path, runs: list[tuple[float, float, str]], base: Path, stereo: bool,
+                     short: bool = False) -> str:
+    """The SRT of one recording, each stretch of a language with its own model."""
+    if len(runs) == 1:
+        return read_srt(whisper(wav, runs[0][2], base, stereo, short))
+    blocks: list[str] = []
+    for i, (st, en, l) in enumerate(runs):
+        part, part_base = base.parent / f".part{i}.wav", base.parent / f".part{i}"
+        ff("-ss", f"{st:.2f}", "-t", f"{en - st:.2f}", "-i", str(wav), "-c:a", "pcm_s16le", str(part))
+        try:
+            blocks += shift_srt(read_srt(whisper(part, l, part_base, stereo, short)), st)
+        finally:
+            part.unlink(missing_ok=True)
+            Path(f"{part_base}.srt").unlink(missing_ok=True)
+    return "\n\n".join(f"{n + 1}\n{b}" for n, b in enumerate(blocks)) + "\n"
+
+
+def transcribe_sides(wav: Path, duration: float, folder: Path) -> tuple[str, list[list[tuple[float, float, str]]]]:
+    """Your side and the other side transcribed apart, once echo removal took the other side out of your track:
+    when you talk at once both are heard in full, every line keeps its side, and each side gets its own language
+    (yours in Hebrew while theirs is in English, say). Returns the SRT, (speaker 0) for you and (speaker 1) for
+    them, and the language stretches of each side."""
+    tracks, side_runs = [], []
+    for ch in (0, 1):
+        mono, side_base = folder / f".side{ch}.wav", folder / f".side{ch}"
+        try:
+            ff("-i", str(wav), "-af", f"pan=mono|c0=c{ch}", "-c:a", "pcm_s16le", str(mono))
+            runs = language_runs(mono, duration)
+            tracks.append(srt_lines(transcribe_track(mono, runs, side_base, stereo=False, short=True)))
+            side_runs.append(runs)
+        finally:
+            mono.unlink(missing_ok=True)
+            Path(f"{side_base}.srt").unlink(missing_ok=True)
+    mine, theirs = tracks
+    lines = sorted([(s, e, 0, t) for s, e, t in mine if not is_echo((s, e, t), theirs)]
+                   + [(s, e, 1, t) for s, e, t in theirs])
+    srt = "\n\n".join(f"{n}\n{srt_time(s)} --> {srt_time(e)}\n(speaker {k}) {t}" for n, (s, e, k, t) in enumerate(lines, 1))
+    return srt + "\n", side_runs
 
 
 def compress(wav: Path) -> Path:
@@ -1384,6 +1470,10 @@ def compress(wav: Path) -> Path:
     return wav
 
 
+def rounded(runs: list[tuple[float, float, str]]) -> list[list]:
+    return [[round(s, 1), round(e, 1), l] for s, e, l in runs]
+
+
 def transcribe(src: Path, folder: Path | None = None, notify_done: bool = False) -> Path:
     need("ffmpeg")
     folder = folder or src.parent
@@ -1395,33 +1485,27 @@ def transcribe(src: Path, folder: Path | None = None, notify_done: bool = False)
     base = folder / f"{src.stem}.transcript"
     turns: list[tuple[float, float, int]] = []
     levels = None
+    sides = stereo and src.stem == "call" and read_meta(folder).get("echo_removed") is True
     try:
         ff("-i", str(src), "-ac", "2" if stereo else "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav))
-        runs = language_runs(wav, duration)
-        langs = sorted({l for _, _, l in runs}, key=lambda l: -sum(e - s for s, e, x in runs if x == l))
+        if sides:
+            print("… Transcribing each side apart (local)")
+            srt_text, side_runs = transcribe_sides(wav, duration, folder)
+            runs = [r for rs in side_runs for r in rs]
+        else:
+            runs = language_runs(wav, duration)
+        # Longest first; a tie goes to the language heard first (your side's, when each side was done apart).
+        langs = sorted(dict.fromkeys(l for _, _, l in runs), key=lambda l: -sum(e - s for s, e, x in runs if x == l))
         lang = langs[0]
         names = " + ".join(MODEL_NAMES.get(l, l) for l in langs)
-        print(f"… Transcribing ({'+'.join(langs)}, {names}, local)")
-        if len(runs) == 1:
-            whisper(wav, lang, base, stereo)
-        else:
-            blocks: list[str] = []
-            for i, (st, en, l) in enumerate(runs):
-                part = folder / f".part{i}.wav"
-                part_base = folder / f".part{i}"
-                ff("-ss", f"{st:.2f}", "-t", f"{en - st:.2f}", "-i", str(wav), "-c:a", "pcm_s16le", str(part))
-                try:
-                    out = whisper(part, l, part_base, stereo)
-                    blocks += shift_srt(out.read_text(encoding="utf-8", errors="replace").replace("\ufffd", ""), st)
-                finally:
-                    part.unlink(missing_ok=True)
-                    Path(f"{part_base}.srt").unlink(missing_ok=True)
-            Path(f"{base}.srt").write_text(
-                "\n\n".join(f"{n + 1}\n{b}" for n, b in enumerate(blocks)) + "\n", encoding="utf-8")
+        if not sides:
+            print(f"… Transcribing ({'+'.join(langs)}, {names}, local)")
+            srt_text = transcribe_track(wav, runs, base, stereo)
+        Path(f"{base}.srt").write_text(srt_text, encoding="utf-8")
         if SPEAKERS:
             print("… Telling apart the voices" + (" on the other side" if stereo else ""))
             turns = speaker_turns(wav, 1 if stereo else 0)
-        levels = channel_levels(wav) if stereo else None
+        levels = channel_levels(wav) if stereo and not sides else None
     finally:
         wav.unlink(missing_ok=True)
         marker.unlink(missing_ok=True)
@@ -1433,7 +1517,8 @@ def transcribe(src: Path, folder: Path | None = None, notify_done: bool = False)
     meta = {}
     if src.stem == "call":
         meta = write_meta(folder, language="+".join(langs), model=names, audio=src.name,
-                          language_runs=[[round(s, 1), round(e, 1), l] for s, e, l in runs] if len(runs) > 1 else None,
+                          language_runs=dict(zip(("me", "them"), map(rounded, side_runs))) if sides
+                          else rounded(runs) if len(runs) > 1 else None,
                           speakers=len({k for _, _, k in turns}) or None)
     body = srt_to_markdown(srt.read_text(encoding="utf-8", errors="replace").replace("\ufffd", ""), stereo, lang, turns, levels)
     md.write_text(header(folder, src, duration, "+".join(langs), meta) + body, encoding="utf-8")
@@ -1475,15 +1560,11 @@ def srt_to_markdown(srt: str, stereo: bool, lang: str = "he",
     labels = {"0": me, "1": them, "?": "?"}
     speaker_word = "דובר" if lang == "he" else "Speaker"
 
-    def seconds(span: re.Match) -> tuple[float, float]:
-        g = [int(x) for x in span.groups()]
-        return (g[0] * 3600 + g[1] * 60 + g[2] + g[3] / 1000, g[4] * 3600 + g[5] * 60 + g[6] + g[7] / 1000)
-
     def who(span: re.Match | None) -> str | None:
         """The other-side speaker who talks most during this line (or the nearest one, in a gap)."""
         if not (turns and span):
             return None
-        a, b = seconds(span)
+        a, b = span_seconds(span)
         best: dict[int, float] = {}
         for s, e, k in turns:
             if e > a and s < b:
@@ -1499,7 +1580,7 @@ def srt_to_markdown(srt: str, stereo: bool, lang: str = "he",
         """Both of you talked at once ("?"): give the line to the louder side."""
         if not (levels and span):
             return "?"
-        a, b = seconds(span)
+        a, b = span_seconds(span)
         i, j = int(a * 10), max(int(b * 10), int(a * 10) + 1)
         left, right = sum(levels[0][i:j]), sum(levels[1][i:j])
         return "0" if left >= right else "1"

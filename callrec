@@ -402,6 +402,7 @@ class Health:
         self.mic_zero_since: float | None = None
         self.sys_heard = False
         self.warned: set[str] = set()
+        self.resolved: set[str] = set()
         self.last_check = 0.0
         self.last_sound = time.time()  # last time anyone was heard on either side
 
@@ -423,12 +424,14 @@ class Health:
                                  "for CallRec (or your terminal) in System Settings.")
         elif mic_peak:
             self.mic_zero_since = None
+            self.resolve("mic")
         if (mic_peak or 0) > 0.05:  # speech, not room noise
             self.last_sound = now
         tmps = sorted(self.rec.folder.glob(".system.wav.*.tmp"), key=lambda p: p.stat().st_mtime)
         sys_peak = tail_peak(tmps[-1], 5) if tmps else None
         if sys_peak:
             self.sys_heard = True
+            self.resolve("system")
         if (sys_peak or 0) > 0.005:
             self.last_sound = now
         if not self.sys_heard and now - self.rec.started > 90:
@@ -440,9 +443,17 @@ class Health:
             return
         self.warned.add(key)
         print(f"⚠ {message}")
-        emit(state="warning", message=message, folder=str(self.rec.folder))
+        emit(state="warning", key=key, message=message, folder=str(self.rec.folder))
         if not EVENTS:
             notify(message)
+
+    def resolve(self, key: str) -> None:
+        """A warning whose cause went away during the call (the other side started talking late, the mic came
+        back) leaves the menu bar."""
+        if key in self.warned and key not in self.resolved:
+            self.resolved.add(key)
+            print(f"✔ resolved: {key}")
+            emit(state="resolved", key=key, folder=str(self.rec.folder))
 
 
 # ---------- recording ----------

@@ -58,6 +58,8 @@ enum Phase: Equatable {
 final class Engine: ObservableObject {
     @Published var phase: Phase = .starting
     @Published var warning: String?
+    /// The recording's warnings that still hold, newest last; `warning` shows the newest.
+    private var activeWarnings: [(key: String, message: String)] = []
     @Published var now = Date()
     @Published var autoStart: Bool {
         didSet { setAutoFlag(autoStart) }
@@ -322,7 +324,7 @@ final class Engine: ObservableObject {
             phase = .paused
         case "recording":
             let since = (e["started"] as? Double).map { Date(timeIntervalSince1970: $0) } ?? Date()
-            if case .recording = phase {} else { warning = nil; setMuted(false) }
+            if case .recording = phase {} else { clearWarnings(); setMuted(false) }
             phase = .recording(app: e["app"] as? String, since: since)
             if let folder = e["folder"] as? String, folder != titledFolder {
                 titledFolder = folder
@@ -340,14 +342,21 @@ final class Engine: ObservableObject {
             notify("Recovered a recording", "A recording that was cut off was saved and is being transcribed.")
         case "warning", "error":
             let msg = e["message"] as? String ?? "Something went wrong"
+            let key = e["key"] as? String ?? msg
+            activeWarnings.removeAll { $0.key == key }
+            activeWarnings.append((key, msg))
             warning = msg
             notify("CallRec: check this now", msg)
+        case "resolved":
+            guard let key = e["key"] as? String, activeWarnings.contains(where: { $0.key == key }) else { break }
+            activeWarnings.removeAll { $0.key == key }
+            warning = activeWarnings.last?.message
         case "selftest":
             let mic = e["mic"] as? Bool ?? false, sys = e["system"] as? Bool ?? false
             UserDefaults.standard.set(mic && sys, forKey: "selftestPassed")
             UserDefaults.standard.set(Self.buildID(), forKey: "selftestBuild")
             if mic && sys {
-                warning = nil
+                clearWarnings()
                 notify("CallRec works", "Both your mic and the other side are recorded.", force: true)
             } else {
                 warning = !mic ? "Microphone is not recorded. Allow CallRec in System Settings > Privacy & Security > Microphone."
@@ -363,11 +372,16 @@ final class Engine: ObservableObject {
 
     // MARK: actions
 
+    private func clearWarnings() {
+        activeWarnings = []
+        warning = nil
+    }
+
     var isRecording: Bool { if case .recording = phase { return true } else { return false } }
 
     func startRecording() {
         guard let p = process, p.isRunning else { bootstrap(); return }
-        warning = nil
+        clearWarnings()
         kill(p.processIdentifier, SIGUSR1)
     }
 

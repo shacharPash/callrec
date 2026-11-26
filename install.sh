@@ -107,7 +107,8 @@ find_app() {
   return 1
 }
 
-app_running()   { pgrep -xq "$APP_NAME"; }
+# -a: when Update in the app runs this installer, CallRec is its parent, and pgrep skips its own parents otherwise.
+app_running()   { pgrep -axq "$APP_NAME"; }
 recording_now() { pgrep -qf 'callrec-mic|ffmpeg .*-f avfoundation'; }
 
 verify_app() {
@@ -139,7 +140,7 @@ quit_app_if_running() {
     waited=$((waited + 1))
   done
   if app_running; then
-    pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+    pkill -ax "$APP_NAME" >/dev/null 2>&1 || true
     sleep 1
   fi
   rm -f "$request"

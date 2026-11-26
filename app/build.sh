@@ -11,7 +11,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/engine"
 
 echo "→ Compiling"
 swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macos14.2 \
-  CallRec.swift Library.swift -o "$APP/Contents/MacOS/CallRec"
+  CallRec.swift Library.swift Updater.swift -o "$APP/Contents/MacOS/CallRec"
 
 echo "→ Icon"
 ICONSET="$OUT/AppIcon.iconset"

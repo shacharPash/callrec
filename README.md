@@ -8,7 +8,7 @@ Record every call on your Mac and get a transcript, automatically. Free, fully l
 - Works with headphones, AirPods or speakers, and keeps recording if you plug in or unplug them mid-call. On speakers, the other side's voice that your mic picks up is removed from your side after the call.
 - Hebrew is transcribed with the [ivrit.ai](https://huggingface.co/ivrit-ai) model, English with Whisper large-v3-turbo. The language is detected automatically, also when a call switches between Hebrew and English.
 - Speakers: "you" (your mic) and "the other side" (what your Mac plays). Click a name in the transcript to rename it.
-- Nothing leaves your computer.
+- Nothing about your calls leaves your computer. The only thing the app asks the internet is whether there is a newer version, when it opens and once a day (turn it off with **Check for updates** in the menu).
 
 ## Before you record
 
@@ -24,7 +24,7 @@ Open Terminal and paste:
 
 Needs an Apple Silicon Mac (M1 or newer) and macOS 14.2 or newer. No Homebrew, no admin password.
 
-The command installs the CallRec app in Applications (or `~/Applications` if you can't write to Applications), its tools in `~/.callrec/bin` (uv, ffmpeg, ffprobe, whisper-cli, callrec-mic), the transcription models in `~/.callrec/models` (about 2.5 GB, once; an ivrit.ai model you already have from OpenSuperWhisper or Vibe is reused) and the `callrec` command, then opens the app. Every file the installer downloads is pinned to an exact version and checked with sha256, and an interrupted model download resumes when you run the command again. On the first run, uv also downloads Python and the [catap](https://pypi.org/project/catap/) package for the CallRec engine. To update, run the same command again.
+The command installs the CallRec app in Applications (or `~/Applications` if you can't write to Applications), its tools in `~/.callrec/bin` (uv, ffmpeg, ffprobe, whisper-cli, callrec-mic), the transcription models in `~/.callrec/models` (about 2.5 GB, once; an ivrit.ai model you already have from OpenSuperWhisper or Vibe is reused) and the `callrec` command, then opens the app. Every file the installer downloads is pinned to an exact version and checked with sha256, and an interrupted model download resumes when you run the command again. On the first run, uv also downloads Python and the [catap](https://pypi.org/project/catap/) package for the CallRec engine. To update, choose **Update to CallRec …** in the menu when it shows up, or run the same command again.
 
 The first time CallRec opens it records a 5 second test, and macOS asks for **Microphone** and **System Audio Recording** access. Allow both.
 
@@ -49,13 +49,15 @@ Good to know about the install:
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/shacharPash/callrec/main/install.sh)"
 ```
 
-אחרי ההתקנה האפליקציה יושבת בשורת התפריטים. מתחילים הקלטה מהאייקון או עם Ctrl+Option+R, או מדליקים "Start automatically when a call starts" ואז כל שיחה (זום, מיט, סלאק, טימס, וואטסאפ ועוד) מוקלטת לבד: ההקלטה מתחילה כשהשיחה מתחילה, נעצרת כשהיא נגמרת, והתמלול מוכן כעבור כמה שניות. הקלטה שהתחלתם בעצמכם נמשכת עד שתעצרו אותה. עברית מתומללת עם ivrit.ai ואנגלית עם Whisper, והכל נשאר על המחשב. לעדכון מריצים שוב את אותה פקודה, ואחרי עדכון ייתכן שמקוס יבקש שוב הרשאה למיקרופון ולהקלטת שמע.
+אחרי ההתקנה האפליקציה יושבת בשורת התפריטים. מתחילים הקלטה מהאייקון או עם Ctrl+Option+R, או מדליקים "Start automatically when a call starts" ואז כל שיחה (זום, מיט, סלאק, טימס, וואטסאפ ועוד) מוקלטת לבד: ההקלטה מתחילה כשהשיחה מתחילה, נעצרת כשהיא נגמרת, והתמלול מוכן כעבור כמה שניות. הקלטה שהתחלתם בעצמכם נמשכת עד שתעצרו אותה. עברית מתומללת עם ivrit.ai ואנגלית עם Whisper, והכל נשאר על המחשב. כשיש גרסה חדשה מגיעה התראה, ולעדכון לוחצים על העדכון בתפריט (או מריצים שוב את אותה פקודה), ואחרי עדכון ייתכן שמקוס יבקש שוב הרשאה למיקרופון ולהקלטת שמע.
 
 חשוב לדעת: בישראל מותר למשתתף בשיחה להקליט אותה, אבל במדינות אחרות ייתכן שצריך הסכמה של כל המשתתפים, ולמקום העבודה עשויים להיות כללים משלו. האחריות לעמוד בחוק ובכללים היא שלכם, ובמקרה של ספק כדאי לומר בתחילת השיחה שהיא מוקלטת.
 
 ## The app
 
 From the menu bar icon (or **Ctrl+Option+R** from anywhere): **Start recording**, **Stop recording**. **Show all recordings…** opens a window with every call: details (date, duration, app, language, model, mic and headphones), the transcript, a player (click a line to jump there), search, Rename, and Move to Trash. To transcribe a recording you already have (a phone call, a voice memo, an exported meeting), drag the file into that window or choose **Import recording…**. Click the calendar button in that window's toolbar (**Name recordings from Calendar**) and each new recording is named after the meeting on your calendar at that time (asks for Calendar access once; works with any calendar added to the macOS Calendar app).
+
+When a new version is out, you get one notification and **Update to CallRec …** shows at the top of the menu. Click it: CallRec closes, updates and opens again by itself, and any recording is saved first (the button waits while a call is on). To know about new versions it reads the version number in [install.sh](install.sh) on GitHub when it opens and once a day; **Check for updates** in the menu turns that off.
 
 CallRec lives in the menu bar only (no Dock icon). If you don't see its icon, the menu bar may be full and the notch hides it: open CallRec again from Spotlight or Applications and the Recordings window opens.
 

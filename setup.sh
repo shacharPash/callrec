@@ -98,7 +98,7 @@ ensure_work_dir() {
   WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/callrec-setup.XXXXXX")" || die "Could not create a temporary folder."
 }
 
-recording_now() { pgrep -qf 'ffmpeg .*-f avfoundation'; }
+recording_now() { pgrep -qf 'callrec-mic|ffmpeg .*-f avfoundation'; }
 
 download() {  # download URL FILE SHA256 LABEL
   curl -fL --retry 3 --progress-bar -o "$2" "$1" \

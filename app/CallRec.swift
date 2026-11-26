@@ -148,6 +148,7 @@ final class Engine: ObservableObject {
 
     init() {
         try? FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: quitRequestFlag)  // left over from an update that was cut off
         // Default: record only when you ask.
         if UserDefaults.standard.object(forKey: "autoStart") == nil {
             FileManager.default.createFile(atPath: autoOffFlag.path, contents: nil)
@@ -163,9 +164,11 @@ final class Engine: ObservableObject {
         ])
         pruneMuteLog()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        // .common: keeps ticking while the menu is open, so an update's close request is not held up by it.
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
+        RunLoop.main.add(timer, forMode: .common)
         bootstrap()
     }
 
@@ -464,6 +467,8 @@ final class Engine: ObservableObject {
 
     func tick() {
         now = Date()
+        // The installer asks CallRec to close this way, so any recording is saved before the app is replaced.
+        if !quitting && FileManager.default.fileExists(atPath: quitRequestFlag.path) { quit() }
     }
 
     /// 2026-11-08_1101_Zoom → "Today 11:01", "Yesterday 11:01", "Nov 8, 11:01" (long: with weekday and year).
@@ -533,6 +538,7 @@ final class Engine: ObservableObject {
 struct MenuContent: View {
     @EnvironmentObject var engine: Engine
     @EnvironmentObject var library: Library
+    @EnvironmentObject var updater: Updater
     @Environment(\.openWindow) private var openWindow
 
     func showRecordings() {
@@ -546,6 +552,15 @@ struct MenuContent: View {
             Text(engine.statusLine)
             if let w = engine.warning {
                 Text("⚠︎ " + w)
+            }
+            if let version = updater.available {
+                let inCall = engine.isRecording || engine.phase == .paused || engine.phase == .saving
+                Button { updater.confirmAndUpdate() } label: {
+                    Label(updater.updating ? "Updating CallRec…"
+                          : inCall ? "Update to CallRec \(version) (when the call is over)"
+                          : "Update to CallRec \(version)…", systemImage: "arrow.down.circle")
+                }
+                .disabled(updater.updating || !updater.free)
             }
             Divider()
             switch engine.phase {
@@ -594,6 +609,9 @@ struct MenuContent: View {
             .disabled(engine.isRecording)
             Toggle(isOn: $engine.openAtLogin) {
                 Label("Open at login", systemImage: "person.crop.circle.badge.checkmark")
+            }
+            Toggle(isOn: $updater.enabled) {
+                Label("Check for updates", systemImage: "arrow.triangle.2.circlepath")
             }
             Button { engine.quit() } label: {
                 Label("Quit CallRec", systemImage: "power")
@@ -667,10 +685,11 @@ struct CallRecApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var engine = Engine()
     @StateObject private var library = Library()
+    @StateObject private var updater = Updater()
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContent().environmentObject(engine).environmentObject(library)
+            MenuContent().environmentObject(engine).environmentObject(library).environmentObject(updater)
         } label: {
             MenuIcon().environmentObject(engine).environmentObject(library)
         }

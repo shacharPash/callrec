@@ -24,7 +24,10 @@ PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 OPEN_APP=1
 APP_PATH=""
 APP_WAS_RUNNING=0
+OLD_APP=""
 WORK_DIR=""
+# Exit code for "a call is being recorded": the app's Update button then stays quiet and lets you try later.
+BUSY=75
 
 if [ -t 1 ]; then
   BOLD=$'\033[1m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; RESET=$'\033[0m'
@@ -35,7 +38,7 @@ fi
 step() { printf '\n%s==> %s%s\n' "$BOLD" "$1" "$RESET"; }
 ok()   { printf '  %sok%s  %s\n' "$GREEN" "$RESET" "$1"; }
 warn() { printf '  %s!!%s  %s\n' "$YELLOW" "$RESET" "$1"; }
-die()  { printf '\n%sError:%s %s\n' "$RED" "$RESET" "$1" >&2; exit 1; }
+die()  { printf '\n%sError:%s %s\n' "$RED" "$RESET" "$1" >&2; exit "${2:-1}"; }
 
 cleanup() {
   if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
@@ -105,7 +108,7 @@ find_app() {
 }
 
 app_running()   { pgrep -xq "$APP_NAME"; }
-recording_now() { pgrep -qf 'ffmpeg .*-f avfoundation'; }
+recording_now() { pgrep -qf 'callrec-mic|ffmpeg .*-f avfoundation'; }
 
 verify_app() {
   local app="$1" id version
@@ -118,22 +121,45 @@ verify_app() {
 
 refuse_while_recording() {
   if app_running && recording_now; then
-    die "$APP_NAME is recording a call right now. Run the same command again when the call is over."
+    die "$APP_NAME is recording a call right now. Run the same command again when the call is over." "$BUSY"
   fi
 }
 
 quit_app_if_running() {
   app_running || return 0
   APP_WAS_RUNNING=1
-  osascript -e "tell application id \"$APP_BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
-  local waited=0
-  while [ "$waited" -lt 20 ]; do
-    app_running || return 0
+  # CallRec 1.5 and newer close by themselves when this file appears, saving any recording first.
+  local request="$HOME/.callrec/quit-request" waited=0
+  : > "$request" 2>/dev/null || true
+  while [ "$waited" -lt 30 ] && app_running; do
+    if [ "$waited" -eq 5 ]; then
+      osascript -e "tell application id \"$APP_BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+    fi
     sleep 1
     waited=$((waited + 1))
   done
-  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
-  sleep 1
+  if app_running; then
+    pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+    sleep 1
+  fi
+  rm -f "$request"
+}
+
+# On a failure after CallRec was closed: put the old app back if the new one is not in place, and open
+# CallRec again. If that is still the old version, it says on launch that the update did not finish.
+reopen_after_failure() {
+  local status=$? app
+  cleanup
+  [ "$status" -ne 0 ] || return 0
+  if [ -n "$OLD_APP" ] && [ -d "$OLD_APP" ] && [ ! -d "$(dirname "$OLD_APP")/$APP_NAME.app" ]; then
+    mv "$OLD_APP" "$(dirname "$OLD_APP")/$APP_NAME.app" 2>/dev/null || true
+  fi
+  if [ "$APP_WAS_RUNNING" = "1" ] && ! app_running && app="$(find_app)"; then
+    if [ "$(app_version "$app")" != "$APP_VERSION" ]; then
+      : > "$HOME/.callrec/update-failed" 2>/dev/null || true
+    fi
+    open "$app" >/dev/null 2>&1 || true
+  fi
 }
 
 install_app() {
@@ -174,11 +200,20 @@ install_app() {
 
   if app_running && recording_now; then
     rm -rf "$staged"
-    die "A call started while downloading. $APP_NAME was left as it was; run the same command again when the call is over."
+    die "A call started while downloading. $APP_NAME was left as it was; run the same command again when the call is over." "$BUSY"
   fi
   quit_app_if_running
-  rm -rf "${target_dir:?}/$APP_NAME.app"
-  mv "$staged" "$target_dir/$APP_NAME.app"
+  # Renames only, so a failure halfway leaves an app to put back (see reopen_after_failure).
+  if [ -d "$target_dir/$APP_NAME.app" ]; then
+    OLD_APP="$target_dir/.$APP_NAME.app.old"
+    rm -rf "$OLD_APP"
+    mv "$target_dir/$APP_NAME.app" "$OLD_APP" || die "Could not move the old $APP_NAME aside."
+  fi
+  mv "$staged" "$target_dir/$APP_NAME.app" || die "Could not put the new $APP_NAME in place."
+  if [ -n "$OLD_APP" ]; then
+    rm -rf "$OLD_APP"
+    OLD_APP=""
+  fi
 
   APP_PATH="$target_dir/$APP_NAME.app"
   ok "Installed $APP_NAME $APP_VERSION at $APP_PATH"
@@ -189,8 +224,7 @@ run_setup() {
   [ -f "$setup" ] || die "$APP_PATH has no setup script. Delete it and run the same command again."
   if ! PATH="$USER_PATH" /bin/bash "$setup"; then
     if [ "$APP_WAS_RUNNING" = "1" ]; then
-      open "$APP_PATH" >/dev/null 2>&1 || true
-      die "Setup did not finish. $APP_NAME is open again; run the same command again, it continues where it stopped."
+      die "Setup did not finish. $APP_NAME opens again; run the same command again, it continues where it stopped."
     fi
     die "Setup did not finish. Run the same command again, it continues where it stopped."
   fi
@@ -198,6 +232,10 @@ run_setup() {
 
 launch_app() {
   [ "$OPEN_APP" = "1" ] || return 0
+  if app_running; then
+    ok "$APP_NAME is already open."
+    return 0
+  fi
   step "Opening $APP_NAME"
   open "$APP_PATH" || die "Could not open $APP_PATH. Open it from the Applications folder."
   ok "Opened. Look for the waveform icon in the menu bar."
@@ -216,8 +254,9 @@ ${BOLD}How to use:${RESET}
   Recordings and transcripts are saved in ~/CallRecordings.
   In the Terminal: callrec list, callrec doctor, callrec --help.
 
-${BOLD}To update later:${RESET} run the same command again. CallRec is not signed with an Apple
-developer account, so after an update macOS may ask for the two permissions again.
+${BOLD}To update later:${RESET} choose Update in the CallRec menu when it shows up, or run the same
+command again. CallRec is not signed with an Apple developer account, so after an update macOS
+may ask for the two permissions again.
 
 Recording laws differ by country. In Israel a participant may record a conversation they take
 part in; elsewhere you may need everyone's consent. Check your workplace policy too. You are
@@ -227,7 +266,7 @@ EOF
 
 main() {
   parse_args "$@"
-  trap cleanup EXIT
+  trap reopen_after_failure EXIT
   printf '%sCallRec: record and transcribe your calls, fully local%s\n' "$BOLD" "$RESET"
   check_platform
   install_app
